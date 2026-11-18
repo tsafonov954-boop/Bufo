@@ -1,4 +1,4 @@
-//! ClipRecorder.
+//! Bufo.
 //!
 //! Windows Graphics Capture feeds a hardware HEVC encoder that writes short
 //! segments to a ring folder on disk, so RAM stays small. A hotkey (or the
@@ -94,10 +94,15 @@ fn parse_args() -> Config {
     let base = env::var("USERPROFILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join("Videos")
-        .join("ClipRecorder");
+        .join("Videos");
+    // Keep using the folder from the pre-rename "ClipRecorder" builds if it exists.
+    let base = if base.join("Bufo").exists() || !base.join("ClipRecorder").exists() {
+        base.join("Bufo")
+    } else {
+        base.join("ClipRecorder")
+    };
     let mut c = Config {
-        buffer_dir: env::temp_dir().join("cliprecorder-buffer"),
+        buffer_dir: env::temp_dir().join("bufo-buffer"),
         clips_dir: base,
         buffer_secs: 900,
         clip_secs: 60,
@@ -480,7 +485,7 @@ fn save_with_feedback(cfg: &Config) {
 
 /// Only one recorder may run: two would fight over the buffer folder.
 fn already_running() -> bool {
-    named_mutex_exists("Local\\ClipRecorderSingleInstance")
+    named_mutex_exists("Local\\BufoSingleInstance")
 }
 
 /// Create the named mutex; true if someone else already owns it.
@@ -496,7 +501,7 @@ fn named_mutex_exists(name: &str) -> bool {
 fn main() {
     let cfg = Arc::new(parse_args());
     if cfg.ui {
-        if !named_mutex_exists("Local\\ClipRecorderUiInstance") {
+        if !named_mutex_exists("Local\\BufoUiInstance") {
             ui::run((*cfg).clone());
         }
         return;
@@ -528,7 +533,7 @@ fn main() {
         return;
     }
     if cfg.save_after.is_none() && already_running() {
-        eprintln!("ClipRecorder is already running");
+        eprintln!("Bufo is already running");
         return;
     }
     let child = match start_capture(&cfg) {
@@ -566,7 +571,7 @@ fn main() {
     // Tray icon + menu. Its window lives on this thread, so the message loop
     // below must dispatch messages for it.
     let save_item = MenuItem::new(format!("Save clip ({})", cfg.hotkey_save), true, None);
-    let app_item = MenuItem::new("Open ClipRecorder", true, None);
+    let app_item = MenuItem::new("Open Bufo", true, None);
     let gallery_item = MenuItem::new("Gallery in browser", true, None);
     let export_item = MenuItem::new("Export last clip as 9:16", true, None);
     let open_item = MenuItem::new("Open clips folder", true, None);
@@ -584,7 +589,7 @@ fn main() {
     winfo::start_tracker();
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("ClipRecorder: recording")
+        .with_tooltip("Bufo: recording")
         .with_icon(make_icon())
         .build()
         .map_err(|e| eprintln!("tray icon unavailable: {e}"))

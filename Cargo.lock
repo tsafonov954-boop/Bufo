@@ -495,6 +495,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bufo"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "image",
+ "serde",
+ "serde_json",
+ "toml 1.2.1+spec-1.1.0",
+ "tray-icon",
+ "wasapi",
+ "windows-capture",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -657,22 +673,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
-]
-
-[[package]]
-name = "cliprecorder"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui_extras",
- "image",
- "serde",
- "serde_json",
- "toml 1.2.1+spec-1.1.0",
- "tray-icon",
- "wasapi",
- "windows-capture",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

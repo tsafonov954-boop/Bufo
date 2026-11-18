@@ -166,7 +166,7 @@ pub fn open(path: &Path) {
 const PAGE: &str = r##"<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ClipRecorder</title>
+<title>Bufo</title>
 <style>
 :root{--bg:#0f1115;--card:#181b22;--line:#262a33;--text:#e8eaf0;--mute:#8b93a3;--acc:#e63a3a}
 @media (prefers-color-scheme:light){:root{--bg:#f4f5f8;--card:#fff;--line:#dfe2ea;--text:#1b1e26;--mute:#6a7283}}
@@ -196,7 +196,7 @@ main{padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250
 @media (max-width:520px){main{grid-template-columns:1fr}}
 </style></head><body>
 <header>
-<h1>ClipRecorder</h1>
+<h1>Bufo</h1>
 <input id="q" type="search" placeholder="Search by title, game, tag, date (2026-11)..." autofocus>
 <div id="chips"></div><div id="count"></div>
 </header>

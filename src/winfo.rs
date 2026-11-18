@@ -15,7 +15,7 @@ static LAST_APP: Mutex<String> = Mutex::new(String::new());
 /// Shell and system hosts that are never "the game".
 const IGNORED: &[&str] = &[
     "explorer",
-    "cliprecorder",
+    "bufo",
     "shellexperiencehost",
     "searchhost",
     "searchapp",

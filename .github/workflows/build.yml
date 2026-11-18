@@ -16,10 +16,10 @@ jobs:
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: cliprecorder-windows
-          path: target/release/cliprecorder.exe
+          name: bufo-windows
+          path: target/release/bufo.exe
       - if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/cliprecorder.exe
+          files: target/release/bufo.exe
 

@@ -1,4 +1,4 @@
-# ClipRecorder
+# Bufo
 
 Lightweight instant-replay clip recorder for Windows, written in Rust (a Medal.tv alternative).
 Records the screen into a disk ring buffer with the hardware encoder, so RAM stays low; one hotkey saves the last N seconds instantly.
@@ -19,7 +19,7 @@ Windows 10/11, ffmpeg in PATH (or `FFMPEG` env var).
 cargo build --release
 cargo test
 ```
-Config: `%APPDATA%\ClipRecorder\config.toml`; flags override it (`cliprecorder --help` style flags: `--buffer --clip --fps --bitrate --ui --export last --style crop`).
+Config: `%APPDATA%\Bufo\config.toml`; flags override it (`bufo --help` style flags: `--buffer --clip --fps --bitrate --ui --export last --style crop`).
 
 ## Status
 Tested on a desktop; real-game FPS impact not yet measured. License: GPLv3 (see LICENSE).

@@ -1,4 +1,4 @@
-//! The ClipRecorder window: clip library (search, rename, tag, play, export,
+//! The Bufo window: clip library (search, rename, tag, play, export,
 //! delete) and settings. It is a separate on-demand process (`--ui`, opened
 //! from the tray), so it costs nothing while you are gaming.
 
@@ -33,7 +33,7 @@ const OK: Color32 = Color32::from_rgb(76, 201, 120);
 
 /// Is the background recorder running? (It holds a named mutex.)
 fn recorder_running() -> bool {
-    let name: Vec<u16> = "Local\\ClipRecorderSingleInstance\0".encode_utf16().collect();
+    let name: Vec<u16> = "Local\\BufoSingleInstance\0".encode_utf16().collect();
     unsafe {
         let h = OpenMutexW(SYNCHRONIZE, 0, name.as_ptr());
         if h.is_null() {
@@ -281,7 +281,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(6.0);
             ui.label(RichText::new("\u{25cf}").color(ACCENT).size(18.0));
-            ui.label(RichText::new("ClipRecorder").strong().size(18.0));
+            ui.label(RichText::new("Bufo").strong().size(18.0));
         });
         ui.add_space(18.0);
         for (tab, icon, name) in [(Tab::Clips, "\u{25b6}", "Clips"), (Tab::Settings, "\u{2699}", "Settings")] {
@@ -600,7 +600,7 @@ impl App {
             });
 
             card(ui, "About", |ui| {
-                ui.label("ClipRecorder \u{b7} GPLv3 \u{b7} open source");
+                ui.label("Bufo \u{b7} GPLv3 \u{b7} open source");
                 ui.label(
                     RichText::new("Windows Graphics Capture + hardware encoder, disk ring buffer.")
                         .color(MUTED)
@@ -762,13 +762,13 @@ fn theme(ctx: &egui::Context) {
 pub fn run(cfg: Config) {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("ClipRecorder")
+            .with_title("Bufo")
             .with_inner_size([1120.0, 720.0])
             .with_min_inner_size([760.0, 520.0]),
         ..Default::default()
     };
     let result = eframe::run_native(
-        "ClipRecorder",
+        "Bufo",
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

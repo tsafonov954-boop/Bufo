@@ -1,4 +1,4 @@
-//! User settings file: `%APPDATA%\ClipRecorder\config.toml`.
+//! User settings file: `%APPDATA%\Bufo\config.toml`.
 //!
 //! Precedence: built-in defaults < config file < command-line flags.
 //! The file is created with the defaults on first run so it can be edited.
@@ -61,7 +61,7 @@ pub fn parse_hotkey(text: &str) -> Option<(u32, u32)> {
     vk.map(|v| (mods, v))
 }
 
-/// Append a line to `%APPDATA%\ClipRecorder\log.txt` (the app has no console).
+/// Append a line to `%APPDATA%\Bufo\log.txt` (the app has no console).
 pub fn log(msg: &str) {
     use std::io::Write;
     if let Some(dir) = config_path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
@@ -77,14 +77,20 @@ pub fn log(msg: &str) {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    Some(PathBuf::from(env::var("APPDATA").ok()?).join("ClipRecorder").join("config.toml"))
+    let roaming = PathBuf::from(env::var("APPDATA").ok()?);
+    let (new, old) = (roaming.join("Bufo"), roaming.join("ClipRecorder"));
+    // One-time migration of settings from the pre-rename folder.
+    if !new.exists() && old.exists() {
+        let _ = fs::rename(&old, &new);
+    }
+    Some(new.join("config.toml"))
 }
 
 const TEMPLATE: &str = "\
-# ClipRecorder settings. Delete a line to use the default.
+# Bufo settings. Delete a line to use the default.
 # Command-line flags override this file.
 
-# clips_dir = \"C:\\\\Users\\\\you\\\\Videos\\\\ClipRecorder\"
+# clips_dir = \"C:\\\\Users\\\\you\\\\Videos\\\\Bufo\"
 buffer_secs = 900     # rolling buffer length
 clip_secs = 60        # length of a saved clip
 fps = 60
@@ -106,7 +112,7 @@ pub fn save(cfg: &FileConfig) -> Result<(), String> {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let body = toml::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    fs::write(&path, format!("# ClipRecorder settings (written by the settings window).\n{body}"))
+    fs::write(&path, format!("# Bufo settings (written by the settings window).\n{body}"))
         .map_err(|e| e.to_string())
 }
 

@@ -1,6 +1,6 @@
 [package]
 license = "GPL-3.0-or-later"
-name = "cliprecorder"
+name = "bufo"
 version = "0.1.0"
 edition = "2021"
 description = "Lightweight instant-replay clip recorder (low RAM, GPU encode)"
