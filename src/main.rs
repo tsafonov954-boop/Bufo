@@ -15,6 +15,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod audio;
 mod wgc;
 
 use windows_sys::Win32::UI::{
@@ -32,6 +33,7 @@ struct Config {
     fps: u32,
     cq: u32,
     bitrate: u32,
+    audio: bool,
     /// "wgc" (native, default) or "ffmpeg" (fallback path).
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
@@ -52,6 +54,7 @@ fn parse_args() -> Config {
         fps: 60,
         cq: 27,
         bitrate: 12_000_000,
+        audio: true,
         capture: "wgc".to_string(),
         save_after: None,
     };
@@ -66,6 +69,11 @@ fn parse_args() -> Config {
             "--cq" => c.cq = val.parse().unwrap_or(c.cq),
             "--bitrate" => c.bitrate = val.parse().unwrap_or(c.bitrate),
             "--capture" => c.capture = val,
+            "--no-audio" => {
+                c.audio = false;
+                i += 1;
+                continue;
+            }
             "--out" => c.clips_dir = PathBuf::from(&val),
             "--save-after" => c.save_after = val.parse().ok(),
             other => eprintln!("unknown arg {other}"),
@@ -241,7 +249,10 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
     clean_buffer(&c.buffer_dir);
     // WGC only delivers frames when the picture changes, so a static desktop
     // legitimately produces nothing; a successful start is enough.
-    let ctl = wgc::start(c.buffer_dir.clone(), c.fps, c.bitrate, SEG_SECS).map_err(|e| e.to_string())?;
+    let audio_rx = if c.audio { audio::start() } else { None };
+    println!("audio: {}", if audio_rx.is_some() { "system loopback" } else { "off" });
+    let ctl = wgc::start(c.buffer_dir.clone(), c.fps, c.bitrate, SEG_SECS, audio_rx)
+        .map_err(|e| e.to_string())?;
     Ok(Rec::Wgc(ctl))
 }
 
