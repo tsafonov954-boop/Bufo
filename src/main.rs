@@ -189,7 +189,8 @@ fn save_clip(c: &Config) -> Option<PathBuf> {
         eprintln!("buffer is empty, nothing to save");
         return None;
     }
-    let want = (c.clip_secs / seg_secs()).max(1) as usize;
+    // Round up so the clip is never shorter than requested.
+    let want = c.clip_secs.div_ceil(seg_secs()).max(1) as usize;
     let start = segs.len().saturating_sub(want);
     let chosen = &segs[start..];
 
