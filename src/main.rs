@@ -59,7 +59,7 @@ fn parse_args() -> Config {
         clip_secs: 60,
         fps: 60,
         cq: 27,
-        bitrate: 12_000_000,
+        bitrate: 6_000_000,
         audio: true,
         capture: "wgc".to_string(),
         save_after: None,
