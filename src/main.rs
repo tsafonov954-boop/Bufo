@@ -23,8 +23,9 @@ use windows_sys::Win32::UI::{
     WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
 };
 
-/// Segment length in seconds (default 2, `--seg N` overrides).
-static SEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2);
+/// Segment length in seconds (default 8, `--seg N` overrides). Longer segments
+/// mean fewer encoder restarts, which is what leaks a few handles each time.
+static SEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(8);
 
 fn seg_secs() -> u64 {
     SEG.load(std::sync::atomic::Ordering::Relaxed).max(1)
@@ -74,7 +75,7 @@ fn parse_args() -> Config {
             "--cq" => c.cq = val.parse().unwrap_or(c.cq),
             "--bitrate" => c.bitrate = val.parse().unwrap_or(c.bitrate),
             "--capture" => c.capture = val,
-            "--seg" => SEG.store(val.parse().unwrap_or(2), std::sync::atomic::Ordering::Relaxed),
+            "--seg" => SEG.store(val.parse().unwrap_or(8), std::sync::atomic::Ordering::Relaxed),
             "--no-audio" => {
                 c.audio = false;
                 i += 1;
