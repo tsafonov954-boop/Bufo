@@ -130,10 +130,19 @@ impl GraphicsCaptureApiHandler for Recorder {
         if let Some(enc) = self.encoder.as_mut() {
             if let Some(rx) = &self.audio_rx {
                 while let Ok(chunk) = rx.try_recv() {
-                    enc.send_audio_buffer(&chunk, 0)?;
+                    if let Err(e) = enc.send_audio_buffer(&chunk, 0) {
+                        crate::settings::log(&format!("audio send failed: {e}"));
+                        break;
+                    }
                 }
             }
-            enc.send_frame(frame)?;
+            let t0 = Instant::now();
+            if let Err(e) = enc.send_frame(frame) {
+                crate::settings::log(&format!("frame send failed: {e}"));
+            }
+            if std::env::var_os("BUFO_DEBUG").is_some() {
+                crate::settings::log(&format!("frame idx {} took {} ms", self.idx, t0.elapsed().as_millis()));
+            }
         }
         Ok(())
     }
@@ -156,6 +165,24 @@ pub fn start(
     seg_secs: u64,
     audio_rx: Option<Receiver<Vec<u8>>>,
 ) -> Result<Control, Err> {
+    // Experiment: BUFO_WINDOW=<title part> captures that window instead of the monitor.
+    if let Ok(title) = std::env::var("BUFO_WINDOW") {
+        let win = windows_capture::window::Window::from_contains_name(&title)?;
+        let (width, height) = (win.width()? as u32 & !1, win.height()? as u32 & !1);
+        let cfg = EncCfg { dir, width, height, fps, bitrate, audio: audio_rx.is_some() };
+        let flags = WgcFlags { cfg, seg_secs, audio_rx };
+        let settings = Settings::new(
+            win,
+            CursorCaptureSettings::WithCursor,
+            DrawBorderSettings::WithoutBorder,
+            SecondaryWindowSettings::Default,
+            MinimumUpdateIntervalSettings::Default,
+            DirtyRegionSettings::Default,
+            ColorFormat::Bgra8,
+            flags,
+        );
+        return Ok(Recorder::start_free_threaded(settings)?);
+    }
     let monitor = Monitor::primary()?;
     let (width, height) = (monitor.width()?, monitor.height()?);
     let cfg = EncCfg { dir, width, height, fps, bitrate, audio: audio_rx.is_some() };
