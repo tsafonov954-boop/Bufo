@@ -40,6 +40,8 @@ struct Config {
     cq: u32,
     bitrate: u32,
     audio: bool,
+    /// Mix the default microphone into the audio track (opt-in, `--mic`).
+    mic: bool,
     /// "wgc" (native, default) or "ffmpeg" (fallback path).
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
@@ -61,6 +63,7 @@ fn parse_args() -> Config {
         cq: 27,
         bitrate: 6_000_000,
         audio: true,
+        mic: false,
         capture: "wgc".to_string(),
         save_after: None,
     };
@@ -78,6 +81,11 @@ fn parse_args() -> Config {
             "--seg" => SEG.store(val.parse().unwrap_or(8), std::sync::atomic::Ordering::Relaxed),
             "--no-audio" => {
                 c.audio = false;
+                i += 1;
+                continue;
+            }
+            "--mic" => {
+                c.mic = true;
                 i += 1;
                 continue;
             }
@@ -257,8 +265,10 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
     clean_buffer(&c.buffer_dir);
     // WGC only delivers frames when the picture changes, so a static desktop
     // legitimately produces nothing; a successful start is enough.
-    let audio_rx = if c.audio { audio::start() } else { None };
-    println!("audio: {}", if audio_rx.is_some() { "system loopback" } else { "off" });
+    let audio_rx = if c.audio { audio::start(c.mic) } else { None };
+    if audio_rx.is_none() {
+        println!("audio: off");
+    }
     let ctl = wgc::start(c.buffer_dir.clone(), c.fps, c.bitrate, seg_secs(), audio_rx)
         .map_err(|e| e.to_string())?;
     Ok(Rec::Wgc(ctl))
