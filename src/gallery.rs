@@ -109,7 +109,7 @@ pub fn make_thumb(cfg: &Config, clip: &Path) {
     let _ = Command::new(ffmpeg_bin())
         .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i"])
         .arg(clip)
-        .args(["-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "5"])
+        .args(["-frames:v", "1", "-vf", "scale=360:-2,format=yuvj420p", "-q:v", "5"])
         .arg(&thumb)
         .stdin(Stdio::null())
         .status();
