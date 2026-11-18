@@ -20,6 +20,7 @@ use std::{
 };
 
 mod audio;
+mod export;
 mod gallery;
 mod settings;
 mod wgc;
@@ -74,6 +75,11 @@ struct Config {
     /// Build the gallery page and exit (`--gallery` also opens it).
     gallery: bool,
     gallery_open: bool,
+    /// `--export FILE` (or `--export last`): make a 9:16 version and exit.
+    export: Option<String>,
+    export_style: String,
+    export_from: Option<f64>,
+    export_to: Option<f64>,
     /// "wgc" (native, default) or "ffmpeg" (fallback path).
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
@@ -103,6 +109,10 @@ fn parse_args() -> Config {
         cleanup_only: false,
         gallery: false,
         gallery_open: false,
+        export: None,
+        export_style: "blur".to_string(),
+        export_from: None,
+        export_to: None,
         capture: "wgc".to_string(),
         save_after: None,
     };
@@ -154,6 +164,10 @@ fn parse_args() -> Config {
                 i += 1;
                 continue;
             }
+            "--export" => c.export = Some(val),
+            "--style" => c.export_style = val,
+            "--from" => c.export_from = val.parse().ok(),
+            "--to" => c.export_to = val.parse().ok(),
             "--cleanup" => {
                 c.cleanup_only = true;
                 i += 1;
@@ -470,6 +484,16 @@ fn main() {
         println!("cleanup: removed {} clip(s)", cleanup_clips(&cfg));
         return;
     }
+    if let Some(target) = &cfg.export {
+        let input = if target == "last" { export::newest_clip(&cfg) } else { Some(PathBuf::from(target)) };
+        match input.and_then(|i| {
+            export::vertical(&i, cfg.export_from, cfg.export_to, export::Style::parse(&cfg.export_style))
+        }) {
+            Some(p) => println!("exported: {}", p.display()),
+            None => eprintln!("export failed"),
+        }
+        return;
+    }
     if cfg.gallery {
         match gallery::build(&cfg) {
             Some(p) => {
@@ -522,12 +546,14 @@ fn main() {
     // below must dispatch messages for it.
     let save_item = MenuItem::new(format!("Save clip ({})", cfg.hotkey_save), true, None);
     let gallery_item = MenuItem::new("Gallery (search clips)", true, None);
+    let export_item = MenuItem::new("Export last clip as 9:16", true, None);
     let open_item = MenuItem::new("Open clips folder", true, None);
     let quit_item = MenuItem::new(format!("Quit ({})", cfg.hotkey_quit), true, None);
     let menu = Menu::new();
     let _ = menu.append_items(&[
         &save_item,
         &gallery_item,
+        &export_item,
         &open_item,
         &PredefinedMenuItem::separator(),
         &quit_item,
@@ -544,9 +570,10 @@ fn main() {
     let main_thread = unsafe { GetCurrentThreadId() };
     {
         let cfg = Arc::clone(&cfg);
-        let (save_id, gallery_id, open_id, quit_id) = (
+        let (save_id, gallery_id, export_id, open_id, quit_id) = (
             save_item.id().clone(),
             gallery_item.id().clone(),
+            export_item.id().clone(),
             open_item.id().clone(),
             quit_item.id().clone(),
         );
@@ -557,6 +584,18 @@ fn main() {
                 } else if ev.id == gallery_id {
                     if let Some(p) = gallery::build(&cfg) {
                         gallery::open(&p);
+                    }
+                } else if ev.id == export_id {
+                    let made = export::newest_clip(&cfg)
+                        .and_then(|i| export::vertical(&i, None, None, export::Style::Blur));
+                    match made {
+                        Some(p) => {
+                            settings::log(&format!("exported {}", p.display()));
+                            unsafe {
+                                MessageBeep(MB_OK);
+                            }
+                        }
+                        None => settings::log("export failed (no clip yet, or ffmpeg error)"),
                     }
                 } else if ev.id == open_id {
                     let _ = fs::create_dir_all(&cfg.clips_dir);
