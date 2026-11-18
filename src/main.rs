@@ -15,6 +15,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod wgc;
+
 use windows_sys::Win32::UI::{
     Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_NOREPEAT, VK_F10, VK_F11},
     WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
@@ -29,6 +31,9 @@ struct Config {
     clip_secs: u64,
     fps: u32,
     cq: u32,
+    bitrate: u32,
+    /// "wgc" (native, default) or "ffmpeg" (fallback path).
+    capture: String,
     /// Test mode: save one clip after N seconds, then exit.
     save_after: Option<u64>,
 }
@@ -46,6 +51,8 @@ fn parse_args() -> Config {
         clip_secs: 60,
         fps: 60,
         cq: 27,
+        bitrate: 12_000_000,
+        capture: "wgc".to_string(),
         save_after: None,
     };
     let args: Vec<String> = env::args().skip(1).collect();
@@ -57,6 +64,8 @@ fn parse_args() -> Config {
             "--clip" => c.clip_secs = val.parse().unwrap_or(c.clip_secs),
             "--fps" => c.fps = val.parse().unwrap_or(c.fps),
             "--cq" => c.cq = val.parse().unwrap_or(c.cq),
+            "--bitrate" => c.bitrate = val.parse().unwrap_or(c.bitrate),
+            "--capture" => c.capture = val,
             "--out" => c.clips_dir = PathBuf::from(&val),
             "--save-after" => c.save_after = val.parse().ok(),
             other => eprintln!("unknown arg {other}"),
@@ -81,10 +90,6 @@ enum Capture {
 
 fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
     fs::create_dir_all(&c.buffer_dir)?;
-    // Start from a clean buffer.
-    for s in segments(&c.buffer_dir) {
-        let _ = fs::remove_file(s);
-    }
     let pattern = c.buffer_dir.join("seg_%06d.ts");
     let gop = (c.fps as u64 * SEG_SECS).to_string();
     let log = fs::File::create(c.buffer_dir.join("ffmpeg.log"))?;
@@ -137,7 +142,7 @@ fn segments(dir: &Path) -> Vec<PathBuf> {
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "ts"))
+                .filter(|p| p.extension().is_some_and(|x| x == "ts" || x == "mp4"))
                 .collect()
         })
         .unwrap_or_default();
@@ -161,8 +166,10 @@ fn prune_loop(dir: PathBuf, buffer_secs: u64) {
 
 fn save_clip(c: &Config) -> Option<PathBuf> {
     let mut segs = segments(&c.buffer_dir);
-    // The newest segment is still being written.
-    segs.pop();
+    // ffmpeg's newest .ts is still being written; wgc only publishes finished .mp4.
+    if segs.last().is_some_and(|p| p.extension().is_some_and(|x| x == "ts")) {
+        segs.pop();
+    }
     if segs.is_empty() {
         eprintln!("buffer is empty, nothing to save");
         return None;
@@ -198,14 +205,71 @@ fn save_clip(c: &Config) -> Option<PathBuf> {
     }
 }
 
-fn main() {
-    let cfg = Arc::new(parse_args());
-    let child = match start_with_fallback(&cfg) {
-        Ok(ch) => Arc::new(Mutex::new(ch)),
+/// Remove every leftover segment (finished or half-written) from the buffer.
+fn clean_buffer(dir: &Path) {
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("seg_")) {
+                let _ = fs::remove_file(p);
+            }
+        }
+    }
+}
+
+enum Rec {
+    Ffmpeg(Child),
+    Wgc(wgc::Control),
+}
+
+impl Rec {
+    fn stop(self) {
+        match self {
+            Rec::Ffmpeg(mut c) => {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            Rec::Wgc(c) => {
+                let _ = c.stop();
+            }
+        }
+    }
+}
+
+fn start_wgc(c: &Config) -> Result<Rec, String> {
+    fs::create_dir_all(&c.buffer_dir).map_err(|e| e.to_string())?;
+    clean_buffer(&c.buffer_dir);
+    // WGC only delivers frames when the picture changes, so a static desktop
+    // legitimately produces nothing; a successful start is enough.
+    let ctl = wgc::start(c.buffer_dir.clone(), c.fps, c.bitrate, SEG_SECS).map_err(|e| e.to_string())?;
+    Ok(Rec::Wgc(ctl))
+}
+
+fn start_capture(c: &Config) -> Option<Rec> {
+    if c.capture == "wgc" {
+        match start_wgc(c) {
+            Ok(r) => {
+                println!("capture: Windows Graphics Capture -> HEVC encoder");
+                return Some(r);
+            }
+            Err(e) => eprintln!("wgc failed ({e}), falling back to ffmpeg"),
+        }
+    }
+    clean_buffer(&c.buffer_dir);
+    match start_with_fallback(c) {
+        Ok(ch) => Some(Rec::Ffmpeg(ch)),
         Err(e) => {
             eprintln!("failed to start ffmpeg (is it in PATH?): {e}");
-            return;
+            None
         }
+    }
+}
+
+fn main() {
+    let cfg = Arc::new(parse_args());
+    let child = match start_capture(&cfg) {
+        Some(r) => Arc::new(Mutex::new(Some(r))),
+        None => return,
     };
     println!(
         "recording: buffer {}s, clip {}s, {} fps. Alt+F10 save, Alt+F11 quit",
@@ -220,9 +284,10 @@ fn main() {
     let stop = {
         let child = Arc::clone(&child);
         move || {
-            if let Ok(mut ch) = child.lock() {
-                let _ = ch.kill();
-                let _ = ch.wait();
+            if let Ok(mut g) = child.lock() {
+                if let Some(r) = g.take() {
+                    r.stop();
+                }
             }
         }
     };
