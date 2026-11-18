@@ -3,3 +3,4 @@
 *.log
 test-out/
 test-*/
+bench/*.csv
