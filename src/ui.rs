@@ -88,6 +88,7 @@ struct Form {
     segment_secs: u64,
     audio: bool,
     mic: bool,
+    clipboard: bool,
     max_clips_gb: f64,
     keep_days: u64,
     hotkey_save: String,
@@ -105,6 +106,7 @@ impl Form {
             segment_secs: crate::seg_secs(),
             audio: c.audio,
             mic: c.mic,
+            clipboard: c.clipboard,
             max_clips_gb: c.max_clips_gb,
             keep_days: c.keep_days,
             hotkey_save: c.hotkey_save.clone(),
@@ -123,6 +125,7 @@ impl Form {
             segment_secs: 8,
             audio: true,
             mic: false,
+            clipboard: true,
             max_clips_gb: 0.0,
             keep_days: 0,
             hotkey_save: "Ctrl+Alt+F10".into(),
@@ -140,6 +143,7 @@ impl Form {
             segment_secs: Some(self.segment_secs),
             audio: Some(self.audio),
             mic: Some(self.mic),
+            clipboard: Some(self.clipboard),
             max_clips_gb: Some(self.max_clips_gb),
             keep_days: Some(self.keep_days),
             hotkey_save: Some(self.hotkey_save.clone()),
@@ -568,6 +572,9 @@ impl App {
                 row(ui, "Delete oldest above", |ui| {
                     ui.add(egui::DragValue::new(&mut f.max_clips_gb).range(0.0..=5000.0).speed(0.5).suffix(" GB"));
                     ui.label(RichText::new("0 = never").color(MUTED).size(12.0));
+                });
+                row(ui, "Clipboard", |ui| {
+                    ui.checkbox(&mut f.clipboard, "Copy each saved clip to the clipboard (Ctrl+V in chats)");
                 });
                 row(ui, "Delete clips older than", |ui| {
                     ui.add(egui::DragValue::new(&mut f.keep_days).range(0..=3650).suffix(" days"));

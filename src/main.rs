@@ -66,6 +66,8 @@ struct Config {
     audio: bool,
     /// Mix the default microphone into the audio track (opt-in, `--mic`).
     mic: bool,
+    /// Put the saved clip file on the clipboard (paste into Discord, Telegram...).
+    clipboard: bool,
     /// Clip folder size limit in GB, 0 = unlimited.
     max_clips_gb: f64,
     /// Delete clips older than this many days, 0 = keep forever.
@@ -111,6 +113,7 @@ fn parse_args() -> Config {
         bitrate: 6_000_000,
         audio: true,
         mic: false,
+        clipboard: true,
         max_clips_gb: 0.0,
         keep_days: 0,
         hotkey_save: "Ctrl+Alt+F10".to_string(),
@@ -137,6 +140,7 @@ fn parse_args() -> Config {
     c.bitrate = f.bitrate.unwrap_or(c.bitrate);
     c.audio = f.audio.unwrap_or(c.audio);
     c.mic = f.mic.unwrap_or(c.mic);
+    c.clipboard = f.clipboard.unwrap_or(c.clipboard);
     c.max_clips_gb = f.max_clips_gb.unwrap_or(c.max_clips_gb);
     c.keep_days = f.keep_days.unwrap_or(c.keep_days);
     c.hotkey_save = f.hotkey_save.unwrap_or(c.hotkey_save);
@@ -198,8 +202,36 @@ fn parse_args() -> Config {
 }
 
 /// ffmpeg executable: `FFMPEG` env var, else `ffmpeg` from PATH.
+/// Where ffmpeg is: `FFMPEG` env var, next to bufo.exe, a WinGet install, else PATH.
 fn ffmpeg_bin() -> String {
-    env::var("FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        if let Ok(p) = env::var("FFMPEG") {
+            return p;
+        }
+        if let Some(p) = env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("ffmpeg.exe"))) {
+            if p.exists() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+        // WinGet: Packages\Gyan.FFmpeg_*\ffmpeg-*\bin\ffmpeg.exe
+        if let Ok(local) = env::var("LOCALAPPDATA") {
+            let pk = PathBuf::from(local).join("Microsoft").join("WinGet").join("Packages");
+            for e in fs::read_dir(pk).into_iter().flatten().flatten() {
+                if !e.file_name().to_string_lossy().contains("FFmpeg") {
+                    continue;
+                }
+                for sub in fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                    let p = sub.path().join("bin").join("ffmpeg.exe");
+                    if p.exists() {
+                        return p.to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
+        "ffmpeg".to_string()
+    })
+    .clone()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -320,6 +352,7 @@ fn save_clip(c: &Config) -> Option<(PathBuf, u64)> {
         .args(["-c", "copy", "-movflags", "+faststart"])
         .arg(&out)
         .status()
+        .map_err(|e| settings::log(&format!("cannot run ffmpeg: {e}")))
         .ok()?;
     if status.success() {
         println!("saved {} ({} segments)", out.display(), chosen.len());
@@ -475,12 +508,37 @@ fn save_with_feedback(cfg: &Config) {
             settings::log(&format!("saved {}", path.display()));
             gallery::register(cfg, &path, &winfo::last_app(), duration);
             cleanup_clips(cfg);
+            if cfg.clipboard {
+                copy_to_clipboard(&path);
+            }
             unsafe {
                 MessageBeep(MB_OK);
             }
         }
         None => settings::log("save failed (buffer empty or ffmpeg error)"),
     }
+}
+
+/// Put the clip file on the clipboard as a file (Ctrl+V pastes it into chats).
+/// Done on a short-lived thread via PowerShell so the hotkey loop never blocks.
+fn copy_to_clipboard(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let ok = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -LiteralPath $env:BUFO_CLIP"])
+            .env(
+                "BUFO_CLIP",
+                fs::canonicalize(&path)
+                    .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+                    .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
+            )
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .stdin(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        settings::log(if ok { "clip copied to clipboard" } else { "clipboard copy failed" });
+    });
 }
 
 /// Only one recorder may run: two would fight over the buffer folder.
@@ -563,7 +621,8 @@ fn main() {
 
     if let Some(secs) = cfg.save_after {
         thread::sleep(Duration::from_secs(secs));
-        save_clip(&cfg);
+        save_with_feedback(&cfg);
+        thread::sleep(Duration::from_secs(3)); // let the clipboard copy finish
         stop();
         return;
     }
