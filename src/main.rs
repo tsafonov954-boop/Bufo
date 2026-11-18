@@ -1,10 +1,14 @@
-//! ClipRecorder MVP.
+//! ClipRecorder.
 //!
-//! ffmpeg (ddagrab -> hevc_nvenc) writes 2-second MPEG-TS segments to a ring
-//! folder on disk, so RAM stays tiny. A hotkey concatenates the newest
-//! segments into an mp4 with `-c copy` (no re-encode, instant).
+//! Windows Graphics Capture feeds a hardware HEVC encoder that writes short
+//! segments to a ring folder on disk, so RAM stays small. A hotkey (or the
+//! tray menu) concatenates the newest segments into an mp4 with `-c copy`
+//! (no re-encode, instant).
 //!
-//! Hotkeys: Alt+F10 = save clip, Alt+F11 = quit.
+//! Hotkeys: Alt+F10 = save clip, Alt+F11 = quit. Settings: see `settings.rs`.
+
+// Release builds run without a console window; the tray icon is the UI.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
     env, fs,
@@ -16,11 +20,26 @@ use std::{
 };
 
 mod audio;
+mod settings;
 mod wgc;
 
-use windows_sys::Win32::UI::{
-    Input::KeyboardAndMouse::{RegisterHotKey, MOD_ALT, MOD_NOREPEAT, VK_F10, VK_F11},
-    WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
+use windows_sys::Win32::{
+    Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
+    System::{
+        Diagnostics::Debug::MessageBeep,
+        Threading::{CreateMutexW, GetCurrentThreadId},
+    },
+    UI::{
+        Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT},
+        WindowsAndMessaging::{
+            DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MB_OK, MSG,
+            WM_HOTKEY, WM_QUIT,
+        },
+    },
+};
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    TrayIconBuilder,
 };
 
 /// Segment length in seconds (default 8, `--seg N` overrides). Longer segments
@@ -42,6 +61,8 @@ struct Config {
     audio: bool,
     /// Mix the default microphone into the audio track (opt-in, `--mic`).
     mic: bool,
+    hotkey_save: String,
+    hotkey_quit: String,
     /// "wgc" (native, default) or "ffmpeg" (fallback path).
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
@@ -64,9 +85,27 @@ fn parse_args() -> Config {
         bitrate: 6_000_000,
         audio: true,
         mic: false,
+        hotkey_save: "Ctrl+Alt+F10".to_string(),
+        hotkey_quit: "Ctrl+Alt+F11".to_string(),
         capture: "wgc".to_string(),
         save_after: None,
     };
+    // Settings file overrides the defaults; command-line flags override both.
+    let f = settings::load();
+    if let Some(v) = f.clips_dir {
+        c.clips_dir = PathBuf::from(v);
+    }
+    c.buffer_secs = f.buffer_secs.unwrap_or(c.buffer_secs);
+    c.clip_secs = f.clip_secs.unwrap_or(c.clip_secs);
+    c.fps = f.fps.unwrap_or(c.fps);
+    c.bitrate = f.bitrate.unwrap_or(c.bitrate);
+    c.audio = f.audio.unwrap_or(c.audio);
+    c.mic = f.mic.unwrap_or(c.mic);
+    c.hotkey_save = f.hotkey_save.unwrap_or(c.hotkey_save);
+    c.hotkey_quit = f.hotkey_quit.unwrap_or(c.hotkey_quit);
+    if let Some(s) = f.segment_secs {
+        SEG.store(s, std::sync::atomic::Ordering::Relaxed);
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     let mut i = 0;
     while i < args.len() {
@@ -294,15 +333,63 @@ fn start_capture(c: &Config) -> Option<Rec> {
     }
 }
 
+/// 32x32 red "recording" dot with a white ring, generated in code.
+fn make_icon() -> tray_icon::Icon {
+    let n = 32u32;
+    let mut rgba = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let (dx, dy) = (x as f32 - 15.5, y as f32 - 15.5);
+            let d = (dx * dx + dy * dy).sqrt();
+            let px: [u8; 4] = if d < 11.0 {
+                [230, 40, 40, 255]
+            } else if d < 14.0 {
+                [255, 255, 255, 255]
+            } else {
+                [0, 0, 0, 0]
+            };
+            rgba.extend_from_slice(&px);
+        }
+    }
+    tray_icon::Icon::from_rgba(rgba, n, n).expect("valid icon")
+}
+
+/// Save a clip and give an audible confirmation.
+fn save_with_feedback(cfg: &Config) {
+    match save_clip(cfg) {
+        Some(path) => {
+            settings::log(&format!("saved {}", path.display()));
+            unsafe {
+                MessageBeep(MB_OK);
+            }
+        }
+        None => settings::log("save failed (buffer empty or ffmpeg error)"),
+    }
+}
+
+/// Only one recorder may run: two would fight over the buffer folder.
+fn already_running() -> bool {
+    let name: Vec<u16> = "Local\\ClipRecorderSingleInstance\0".encode_utf16().collect();
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        // The handle is intentionally kept open for the life of the process.
+        handle.is_null() || GetLastError() == ERROR_ALREADY_EXISTS
+    }
+}
+
 fn main() {
     let cfg = Arc::new(parse_args());
+    if cfg.save_after.is_none() && already_running() {
+        eprintln!("ClipRecorder is already running");
+        return;
+    }
     let child = match start_capture(&cfg) {
         Some(r) => Arc::new(Mutex::new(Some(r))),
         None => return,
     };
     println!(
-        "recording: buffer {}s, clip {}s, {} fps. Alt+F10 save, Alt+F11 quit",
-        cfg.buffer_secs, cfg.clip_secs, cfg.fps
+        "recording: buffer {}s, clip {}s, {} fps. {} save, {} quit",
+        cfg.buffer_secs, cfg.clip_secs, cfg.fps, cfg.hotkey_save, cfg.hotkey_quit
     );
 
     {
@@ -328,22 +415,72 @@ fn main() {
         return;
     }
 
+    // Tray icon + menu. Its window lives on this thread, so the message loop
+    // below must dispatch messages for it.
+    let save_item = MenuItem::new(format!("Save clip ({})", cfg.hotkey_save), true, None);
+    let open_item = MenuItem::new("Open clips folder", true, None);
+    let quit_item = MenuItem::new(format!("Quit ({})", cfg.hotkey_quit), true, None);
+    let menu = Menu::new();
+    let _ = menu.append_items(&[&save_item, &open_item, &PredefinedMenuItem::separator(), &quit_item]);
+    let _tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("ClipRecorder: recording")
+        .with_icon(make_icon())
+        .build()
+        .map_err(|e| eprintln!("tray icon unavailable: {e}"))
+        .ok();
+
+    let main_thread = unsafe { GetCurrentThreadId() };
+    {
+        let cfg = Arc::clone(&cfg);
+        let (save_id, open_id, quit_id) =
+            (save_item.id().clone(), open_item.id().clone(), quit_item.id().clone());
+        thread::spawn(move || {
+            while let Ok(ev) = MenuEvent::receiver().recv() {
+                if ev.id == save_id {
+                    save_with_feedback(&cfg);
+                } else if ev.id == open_id {
+                    let _ = fs::create_dir_all(&cfg.clips_dir);
+                    let _ = Command::new("explorer").arg(&cfg.clips_dir).spawn();
+                } else if ev.id == quit_id {
+                    unsafe {
+                        PostThreadMessageW(main_thread, WM_QUIT, 0, 0);
+                    }
+                }
+            }
+        });
+    }
+
     unsafe {
-        RegisterHotKey(std::ptr::null_mut(), 1, MOD_ALT | MOD_NOREPEAT, VK_F10 as u32);
-        RegisterHotKey(std::ptr::null_mut(), 2, MOD_ALT | MOD_NOREPEAT, VK_F11 as u32);
+        // A failed registration means another app already owns the combination
+        // (e.g. NVIDIA's overlay owns Alt+F10); say so instead of failing silently.
+        for (id, text) in [(1, &cfg.hotkey_save), (2, &cfg.hotkey_quit)] {
+            match settings::parse_hotkey(text) {
+                Some((mods, vk)) => {
+                    if RegisterHotKey(std::ptr::null_mut(), id, mods | MOD_NOREPEAT, vk) == 0 {
+                        settings::log(&format!(
+                            "hotkey {text} could not be registered (in use by another app?), error {}",
+                            GetLastError()
+                        ));
+                    }
+                }
+                None => settings::log(&format!("hotkey '{text}' is not valid")),
+            }
+        }
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             if msg.message == WM_HOTKEY {
                 match msg.wParam {
                     1 => {
                         let cfg = Arc::clone(&cfg);
-                        thread::spawn(move || {
-                            save_clip(&cfg);
-                        });
+                        thread::spawn(move || save_with_feedback(&cfg));
                     }
                     2 => break,
                     _ => {}
                 }
+            } else {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
         }
     }
