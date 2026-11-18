@@ -23,7 +23,12 @@ use windows_sys::Win32::UI::{
     WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
 };
 
-const SEG_SECS: u64 = 2;
+/// Segment length in seconds (default 2, `--seg N` overrides).
+static SEG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2);
+
+fn seg_secs() -> u64 {
+    SEG.load(std::sync::atomic::Ordering::Relaxed).max(1)
+}
 
 struct Config {
     buffer_dir: PathBuf,
@@ -69,6 +74,7 @@ fn parse_args() -> Config {
             "--cq" => c.cq = val.parse().unwrap_or(c.cq),
             "--bitrate" => c.bitrate = val.parse().unwrap_or(c.bitrate),
             "--capture" => c.capture = val,
+            "--seg" => SEG.store(val.parse().unwrap_or(2), std::sync::atomic::Ordering::Relaxed),
             "--no-audio" => {
                 c.audio = false;
                 i += 1;
@@ -99,7 +105,7 @@ enum Capture {
 fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
     fs::create_dir_all(&c.buffer_dir)?;
     let pattern = c.buffer_dir.join("seg_%06d.ts");
-    let gop = (c.fps as u64 * SEG_SECS).to_string();
+    let gop = (c.fps as u64 * seg_secs()).to_string();
     let log = fs::File::create(c.buffer_dir.join("ffmpeg.log"))?;
     let mut cmd = Command::new(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "warning", "-y"]);
@@ -117,7 +123,7 @@ fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
     cmd.args(["-c:v", "hevc_nvenc", "-preset", "p4", "-rc", "vbr"])
         .args(["-cq", &c.cq.to_string(), "-b:v", "0", "-maxrate", "16M", "-bufsize", "32M"])
         .args(["-g", &gop, "-forced-idr", "1", "-an"])
-        .args(["-f", "segment", "-segment_time", &SEG_SECS.to_string()])
+        .args(["-f", "segment", "-segment_time", &seg_secs().to_string()])
         .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
         .arg(pattern)
         .stdin(Stdio::null())
@@ -160,9 +166,9 @@ fn segments(dir: &Path) -> Vec<PathBuf> {
 
 /// Keep only the newest `buffer_secs` worth of segments.
 fn prune_loop(dir: PathBuf, buffer_secs: u64) {
-    let keep = (buffer_secs / SEG_SECS + 2) as usize;
+    let keep = (buffer_secs / seg_secs() + 2) as usize;
     loop {
-        thread::sleep(Duration::from_secs(SEG_SECS));
+        thread::sleep(Duration::from_secs(seg_secs()));
         let segs = segments(&dir);
         if segs.len() > keep {
             for old in &segs[..segs.len() - keep] {
@@ -182,7 +188,7 @@ fn save_clip(c: &Config) -> Option<PathBuf> {
         eprintln!("buffer is empty, nothing to save");
         return None;
     }
-    let want = (c.clip_secs / SEG_SECS) as usize;
+    let want = (c.clip_secs / seg_secs()).max(1) as usize;
     let start = segs.len().saturating_sub(want);
     let chosen = &segs[start..];
 
@@ -251,7 +257,7 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
     // legitimately produces nothing; a successful start is enough.
     let audio_rx = if c.audio { audio::start() } else { None };
     println!("audio: {}", if audio_rx.is_some() { "system loopback" } else { "off" });
-    let ctl = wgc::start(c.buffer_dir.clone(), c.fps, c.bitrate, SEG_SECS, audio_rx)
+    let ctl = wgc::start(c.buffer_dir.clone(), c.fps, c.bitrate, seg_secs(), audio_rx)
         .map_err(|e| e.to_string())?;
     Ok(Rec::Wgc(ctl))
 }
