@@ -78,6 +78,82 @@ fn finish_async(enc: VideoEncoder, part: PathBuf) {
     });
 }
 
+impl Recorder {
+    /// A recorder fed by something other than WGC (see dda.rs).
+    pub fn standalone(cfg: EncCfg, seg_secs: u64, audio_rx: Option<Receiver<Vec<u8>>>) -> Result<Self, String> {
+        let encoder = make_encoder(&cfg, &part_path(&cfg.dir, 0))?;
+        Ok(Self { cfg, seg_secs, audio_rx, encoder: Some(encoder), idx: 0, seg_started: Instant::now(), next: None })
+    }
+
+    /// Start the next segment's encoder ahead of time and switch when the
+    /// current segment is full.
+    fn rotate(&mut self) {
+        let seg = Duration::from_secs(self.seg_secs);
+        let el = self.seg_started.elapsed();
+
+        if self.next.is_none() && el >= seg.mul_f32(0.7) {
+            let cfg = self.cfg.clone();
+            let path = part_path(&cfg.dir, self.idx + 1);
+            self.next = Some(thread::spawn(move || make_encoder(&cfg, &path)));
+        }
+
+        if el >= seg {
+            if let Some(handle) = self.next.take() {
+                match handle.join() {
+                    Ok(Ok(new_enc)) => {
+                        if let Some(old) = self.encoder.replace(new_enc) {
+                            finish_async(old, part_path(&self.cfg.dir, self.idx));
+                        }
+                        self.idx += 1;
+                        self.seg_started = Instant::now();
+                    }
+                    Ok(Err(e)) => eprintln!("next encoder failed: {e}"),
+                    Err(_) => eprintln!("encoder thread panicked"),
+                }
+            }
+        }
+    }
+
+    fn drain_audio(enc: &mut VideoEncoder, rx: &Option<Receiver<Vec<u8>>>) {
+        if let Some(rx) = rx {
+            while let Ok(chunk) = rx.try_recv() {
+                if let Err(e) = enc.send_audio_buffer(&chunk, 0) {
+                    crate::settings::log(&format!("audio send failed: {e}"));
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Send a GPU texture without a CPU copy (`ts` in 100 ns units).
+    pub fn push_texture(&mut self, tex: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D, ts: i64) {
+        self.rotate();
+        if let Some(enc) = self.encoder.as_mut() {
+            Self::drain_audio(enc, &self.audio_rx);
+            if let Err(e) = enc.send_texture(tex, ts) {
+                crate::settings::log(&format!("frame send failed: {e}"));
+            }
+        }
+    }
+
+    /// Send one raw BGRA bottom-to-top frame (`ts` in 100 ns units).
+    pub fn push_buffer(&mut self, buf: &[u8], ts: i64) {
+        self.rotate();
+        if let Some(enc) = self.encoder.as_mut() {
+            Self::drain_audio(enc, &self.audio_rx);
+            if let Err(e) = enc.send_frame_buffer(buf, ts) {
+                crate::settings::log(&format!("frame send failed: {e}"));
+            }
+        }
+    }
+
+    pub fn close(&mut self) {
+        if let Some(enc) = self.encoder.take() {
+            finish_async(enc, part_path(&self.cfg.dir, self.idx));
+        }
+    }
+}
+
 impl GraphicsCaptureApiHandler for Recorder {
     type Flags = WgcFlags;
     type Error = Err;
@@ -101,41 +177,10 @@ impl GraphicsCaptureApiHandler for Recorder {
         frame: &mut Frame,
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
-        let seg = Duration::from_secs(self.seg_secs);
-        let el = self.seg_started.elapsed();
-
-        // Prepare the next segment's encoder ahead of time.
-        if self.next.is_none() && el >= seg.mul_f32(0.7) {
-            let cfg = self.cfg.clone();
-            let path = part_path(&cfg.dir, self.idx + 1);
-            self.next = Some(thread::spawn(move || make_encoder(&cfg, &path)));
-        }
-
-        if el >= seg {
-            if let Some(handle) = self.next.take() {
-                match handle.join() {
-                    Ok(Ok(new_enc)) => {
-                        if let Some(old) = self.encoder.replace(new_enc) {
-                            finish_async(old, part_path(&self.cfg.dir, self.idx));
-                        }
-                        self.idx += 1;
-                        self.seg_started = Instant::now();
-                    }
-                    Ok(Err(e)) => eprintln!("next encoder failed: {e}"),
-                    Err(_) => eprintln!("encoder thread panicked"),
-                }
-            }
-        }
+        self.rotate();
 
         if let Some(enc) = self.encoder.as_mut() {
-            if let Some(rx) = &self.audio_rx {
-                while let Ok(chunk) = rx.try_recv() {
-                    if let Err(e) = enc.send_audio_buffer(&chunk, 0) {
-                        crate::settings::log(&format!("audio send failed: {e}"));
-                        break;
-                    }
-                }
-            }
+            Self::drain_audio(enc, &self.audio_rx);
             let t0 = Instant::now();
             if let Err(e) = enc.send_frame(frame) {
                 crate::settings::log(&format!("frame send failed: {e}"));

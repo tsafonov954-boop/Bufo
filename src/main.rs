@@ -20,6 +20,7 @@ use std::{
 };
 
 mod audio;
+mod dda;
 mod export;
 mod gallery;
 mod settings;
@@ -86,7 +87,7 @@ struct Config {
     export_style: String,
     export_from: Option<f64>,
     export_to: Option<f64>,
-    /// "wgc" (native, default) or "ffmpeg" (fallback path).
+    /// "dda" (desktop duplication, default; works with fullscreen games), "wgc" or "ffmpeg".
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
     save_after: Option<u64>,
@@ -126,7 +127,7 @@ fn parse_args() -> Config {
         export_style: "blur".to_string(),
         export_from: None,
         export_to: None,
-        capture: "wgc".to_string(),
+        capture: "dda".to_string(),
         save_after: None,
     };
     // Settings file overrides the defaults; command-line flags override both.
@@ -378,6 +379,7 @@ fn clean_buffer(dir: &Path) {
 enum Rec {
     Ffmpeg(Child),
     Wgc(wgc::Control),
+    Dda(dda::Control),
 }
 
 impl Rec {
@@ -387,6 +389,7 @@ impl Rec {
                 let _ = c.kill();
                 let _ = c.wait();
             }
+            Rec::Dda(c) => c.stop(),
             Rec::Wgc(c) => {
                 let _ = c.stop();
             }
@@ -408,8 +411,28 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
     Ok(Rec::Wgc(ctl))
 }
 
+fn start_dda(c: &Config) -> Result<Rec, String> {
+    fs::create_dir_all(&c.buffer_dir).map_err(|e| e.to_string())?;
+    clean_buffer(&c.buffer_dir);
+    let audio_rx = if c.audio { audio::start(c.mic) } else { None };
+    if audio_rx.is_none() {
+        println!("audio: off");
+    }
+    let ctl = dda::start(c.buffer_dir.clone(), c.fps, c.bitrate, seg_secs(), audio_rx)?;
+    Ok(Rec::Dda(ctl))
+}
+
 fn start_capture(c: &Config) -> Option<Rec> {
-    if c.capture == "wgc" {
+    if c.capture == "dda" {
+        match start_dda(c) {
+            Ok(r) => {
+                println!("capture: Desktop Duplication -> HEVC encoder");
+                return Some(r);
+            }
+            Err(e) => eprintln!("desktop duplication failed ({e}), trying Windows Graphics Capture"),
+        }
+    }
+    if c.capture == "wgc" || c.capture == "dda" {
         match start_wgc(c) {
             Ok(r) => {
                 println!("capture: Windows Graphics Capture -> HEVC encoder");

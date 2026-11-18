@@ -6,6 +6,7 @@ edition = "2021"
 description = "Lightweight instant-replay clip recorder (low RAM, GPU encode)"
 
 [dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Foundation"] }
 eframe = "0.37.0"
 egui_extras = { version = "0.37.0", features = ["image", "file"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
@@ -31,3 +32,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+windows-capture = { path = "vendor/windows-capture" }
