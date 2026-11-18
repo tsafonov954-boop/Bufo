@@ -20,8 +20,10 @@ use std::{
 };
 
 mod audio;
+mod gallery;
 mod settings;
 mod wgc;
+mod winfo;
 
 use windows_sys::Win32::{
     Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
@@ -69,6 +71,9 @@ struct Config {
     hotkey_quit: String,
     /// Test/maintenance mode: only run the clip cleanup, then exit.
     cleanup_only: bool,
+    /// Build the gallery page and exit (`--gallery` also opens it).
+    gallery: bool,
+    gallery_open: bool,
     /// "wgc" (native, default) or "ffmpeg" (fallback path).
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
@@ -96,6 +101,8 @@ fn parse_args() -> Config {
         hotkey_save: "Ctrl+Alt+F10".to_string(),
         hotkey_quit: "Ctrl+Alt+F11".to_string(),
         cleanup_only: false,
+        gallery: false,
+        gallery_open: false,
         capture: "wgc".to_string(),
         save_after: None,
     };
@@ -141,6 +148,12 @@ fn parse_args() -> Config {
             }
             "--max-gb" => c.max_clips_gb = val.parse().unwrap_or(c.max_clips_gb),
             "--keep-days" => c.keep_days = val.parse().unwrap_or(c.keep_days),
+            "--gallery" | "--gallery-build" => {
+                c.gallery = true;
+                c.gallery_open = args[i] == "--gallery";
+                i += 1;
+                continue;
+            }
             "--cleanup" => {
                 c.cleanup_only = true;
                 i += 1;
@@ -244,7 +257,9 @@ fn prune_loop(dir: PathBuf, buffer_secs: u64) {
     }
 }
 
-fn save_clip(c: &Config) -> Option<PathBuf> {
+/// Concatenate the newest segments into an mp4. Returns the file and its
+/// approximate length in seconds.
+fn save_clip(c: &Config) -> Option<(PathBuf, u64)> {
     let mut segs = segments(&c.buffer_dir);
     // ffmpeg's newest .ts is still being written; wgc only publishes finished .mp4.
     if segs.last().is_some_and(|p| p.extension().is_some_and(|x| x == "ts")) {
@@ -279,7 +294,7 @@ fn save_clip(c: &Config) -> Option<PathBuf> {
         .ok()?;
     if status.success() {
         println!("saved {} ({} segments)", out.display(), chosen.len());
-        Some(out)
+        Some((out, chosen.len() as u64 * seg_secs()))
     } else {
         eprintln!("ffmpeg concat failed");
         None
@@ -427,8 +442,9 @@ fn cleanup_clips(cfg: &Config) -> usize {
 /// Save a clip and give an audible confirmation.
 fn save_with_feedback(cfg: &Config) {
     match save_clip(cfg) {
-        Some(path) => {
+        Some((path, duration)) => {
             settings::log(&format!("saved {}", path.display()));
+            gallery::register(cfg, &path, &winfo::last_app(), duration);
             cleanup_clips(cfg);
             unsafe {
                 MessageBeep(MB_OK);
@@ -452,6 +468,18 @@ fn main() {
     let cfg = Arc::new(parse_args());
     if cfg.cleanup_only {
         println!("cleanup: removed {} clip(s)", cleanup_clips(&cfg));
+        return;
+    }
+    if cfg.gallery {
+        match gallery::build(&cfg) {
+            Some(p) => {
+                println!("gallery: {}", p.display());
+                if cfg.gallery_open {
+                    gallery::open(&p);
+                }
+            }
+            None => eprintln!("gallery: could not build"),
+        }
         return;
     }
     if cfg.save_after.is_none() && already_running() {
@@ -493,10 +521,18 @@ fn main() {
     // Tray icon + menu. Its window lives on this thread, so the message loop
     // below must dispatch messages for it.
     let save_item = MenuItem::new(format!("Save clip ({})", cfg.hotkey_save), true, None);
+    let gallery_item = MenuItem::new("Gallery (search clips)", true, None);
     let open_item = MenuItem::new("Open clips folder", true, None);
     let quit_item = MenuItem::new(format!("Quit ({})", cfg.hotkey_quit), true, None);
     let menu = Menu::new();
-    let _ = menu.append_items(&[&save_item, &open_item, &PredefinedMenuItem::separator(), &quit_item]);
+    let _ = menu.append_items(&[
+        &save_item,
+        &gallery_item,
+        &open_item,
+        &PredefinedMenuItem::separator(),
+        &quit_item,
+    ]);
+    winfo::start_tracker();
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("ClipRecorder: recording")
@@ -508,12 +544,20 @@ fn main() {
     let main_thread = unsafe { GetCurrentThreadId() };
     {
         let cfg = Arc::clone(&cfg);
-        let (save_id, open_id, quit_id) =
-            (save_item.id().clone(), open_item.id().clone(), quit_item.id().clone());
+        let (save_id, gallery_id, open_id, quit_id) = (
+            save_item.id().clone(),
+            gallery_item.id().clone(),
+            open_item.id().clone(),
+            quit_item.id().clone(),
+        );
         thread::spawn(move || {
             while let Ok(ev) = MenuEvent::receiver().recv() {
                 if ev.id == save_id {
                     save_with_feedback(&cfg);
+                } else if ev.id == gallery_id {
+                    if let Some(p) = gallery::build(&cfg) {
+                        gallery::open(&p);
+                    }
                 } else if ev.id == open_id {
                     let _ = fs::create_dir_all(&cfg.clips_dir);
                     let _ = Command::new("explorer").arg(&cfg.clips_dir).spawn();
