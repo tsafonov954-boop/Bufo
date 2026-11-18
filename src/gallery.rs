@@ -26,11 +26,57 @@ pub struct ClipMeta {
     pub tags: Vec<String>,
 }
 
-fn sidecar(clip: &Path) -> PathBuf {
+pub fn sidecar(clip: &Path) -> PathBuf {
     clip.with_extension("json")
 }
 
-fn thumb_path(cfg: &Config, clip: &Path) -> PathBuf {
+/// Persist edited title/tags next to the clip.
+pub fn save_meta(clip: &Path, meta: &ClipMeta) {
+    if let Ok(json) = serde_json::to_string_pretty(meta) {
+        let _ = fs::write(sidecar(clip), json);
+    }
+}
+
+/// Remove a clip together with its sidecar and thumbnail.
+pub fn delete_clip(cfg: &Config, clip: &Path) {
+    let _ = fs::remove_file(clip);
+    let _ = fs::remove_file(sidecar(clip));
+    let _ = fs::remove_file(thumb_path(cfg, clip));
+}
+
+/// All `clip_*.mp4` with their metadata (defaults filled in) and size, newest first.
+pub fn scan(cfg: &Config) -> Vec<(PathBuf, ClipMeta, u64)> {
+    let Ok(rd) = fs::read_dir(&cfg.clips_dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.filter_map(|e| e.ok()) {
+        let path = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        if !(name.starts_with("clip_") && name.ends_with(".mp4")) {
+            continue;
+        }
+        let Ok(md) = e.metadata() else { continue };
+        let mut meta: ClipMeta = fs::read_to_string(sidecar(&path))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        if meta.created == 0 {
+            meta.created = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+        }
+        if meta.title.is_empty() {
+            meta.title = if meta.game.is_empty() { "Clip".to_string() } else { meta.game.clone() };
+        }
+        out.push((path, meta, md.len()));
+    }
+    out.sort_by(|a, b| b.1.created.cmp(&a.1.created));
+    out
+}
+
+pub fn thumb_path(cfg: &Config, clip: &Path) -> PathBuf {
     let stem = clip.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     cfg.clips_dir.join(".thumbs").join(format!("{stem}.jpg"))
 }
@@ -52,7 +98,7 @@ pub fn register(cfg: &Config, clip: &Path, game: &str, duration: u64) {
 }
 
 /// One small JPEG frame (about 1 s in, or the first frame for short clips).
-fn make_thumb(cfg: &Config, clip: &Path) {
+pub fn make_thumb(cfg: &Config, clip: &Path) {
     let thumb = thumb_path(cfg, clip);
     if thumb.exists() {
         return;
@@ -82,44 +128,21 @@ struct Entry {
 }
 
 fn collect(cfg: &Config) -> Vec<Entry> {
-    let Ok(rd) = fs::read_dir(&cfg.clips_dir) else { return Vec::new() };
     let mut out = Vec::new();
-    for e in rd.filter_map(|e| e.ok()) {
-        let path = e.path();
-        let name = e.file_name().to_string_lossy().to_string();
-        if !(name.starts_with("clip_") && name.ends_with(".mp4")) {
-            continue;
-        }
-        let Ok(md) = e.metadata() else { continue };
-        let mut meta: ClipMeta = fs::read_to_string(sidecar(&path))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        if meta.created == 0 {
-            meta.created = md
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-        }
-        if meta.title.is_empty() {
-            meta.title = if meta.game.is_empty() { "Clip".to_string() } else { meta.game.clone() };
-        }
+    for (path, meta, size) in scan(cfg) {
         make_thumb(cfg, &path);
         let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         out.push(Entry {
-            file: name,
+            file: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             thumb: format!(".thumbs/{stem}.jpg"),
             title: meta.title,
             game: meta.game,
             created: meta.created,
             duration: meta.duration,
-            size_mb: (md.len() as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+            size_mb: (size as f64 / 1_048_576.0 * 10.0).round() / 10.0,
             tags: meta.tags,
         });
     }
-    out.sort_by(|a, b| b.created.cmp(&a.created));
     out
 }
 

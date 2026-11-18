@@ -23,6 +23,7 @@ mod audio;
 mod export;
 mod gallery;
 mod settings;
+mod ui;
 mod wgc;
 mod winfo;
 
@@ -53,6 +54,7 @@ fn seg_secs() -> u64 {
     SEG.load(std::sync::atomic::Ordering::Relaxed).max(1)
 }
 
+#[derive(Clone)]
 struct Config {
     buffer_dir: PathBuf,
     clips_dir: PathBuf,
@@ -75,6 +77,8 @@ struct Config {
     /// Build the gallery page and exit (`--gallery` also opens it).
     gallery: bool,
     gallery_open: bool,
+    /// `--ui`: open the application window instead of recording.
+    ui: bool,
     /// `--export FILE` (or `--export last`): make a 9:16 version and exit.
     export: Option<String>,
     export_style: String,
@@ -109,6 +113,7 @@ fn parse_args() -> Config {
         cleanup_only: false,
         gallery: false,
         gallery_open: false,
+        ui: false,
         export: None,
         export_style: "blur".to_string(),
         export_from: None,
@@ -161,6 +166,11 @@ fn parse_args() -> Config {
             "--gallery" | "--gallery-build" => {
                 c.gallery = true;
                 c.gallery_open = args[i] == "--gallery";
+                i += 1;
+                continue;
+            }
+            "--ui" => {
+                c.ui = true;
                 i += 1;
                 continue;
             }
@@ -470,7 +480,12 @@ fn save_with_feedback(cfg: &Config) {
 
 /// Only one recorder may run: two would fight over the buffer folder.
 fn already_running() -> bool {
-    let name: Vec<u16> = "Local\\ClipRecorderSingleInstance\0".encode_utf16().collect();
+    named_mutex_exists("Local\\ClipRecorderSingleInstance")
+}
+
+/// Create the named mutex; true if someone else already owns it.
+fn named_mutex_exists(name: &str) -> bool {
+    let name: Vec<u16> = format!("{name}\0").encode_utf16().collect();
     unsafe {
         let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
         // The handle is intentionally kept open for the life of the process.
@@ -480,6 +495,12 @@ fn already_running() -> bool {
 
 fn main() {
     let cfg = Arc::new(parse_args());
+    if cfg.ui {
+        if !named_mutex_exists("Local\\ClipRecorderUiInstance") {
+            ui::run((*cfg).clone());
+        }
+        return;
+    }
     if cfg.cleanup_only {
         println!("cleanup: removed {} clip(s)", cleanup_clips(&cfg));
         return;
@@ -545,12 +566,14 @@ fn main() {
     // Tray icon + menu. Its window lives on this thread, so the message loop
     // below must dispatch messages for it.
     let save_item = MenuItem::new(format!("Save clip ({})", cfg.hotkey_save), true, None);
-    let gallery_item = MenuItem::new("Gallery (search clips)", true, None);
+    let app_item = MenuItem::new("Open ClipRecorder", true, None);
+    let gallery_item = MenuItem::new("Gallery in browser", true, None);
     let export_item = MenuItem::new("Export last clip as 9:16", true, None);
     let open_item = MenuItem::new("Open clips folder", true, None);
     let quit_item = MenuItem::new(format!("Quit ({})", cfg.hotkey_quit), true, None);
     let menu = Menu::new();
     let _ = menu.append_items(&[
+        &app_item,
         &save_item,
         &gallery_item,
         &export_item,
@@ -570,7 +593,8 @@ fn main() {
     let main_thread = unsafe { GetCurrentThreadId() };
     {
         let cfg = Arc::clone(&cfg);
-        let (save_id, gallery_id, export_id, open_id, quit_id) = (
+        let (app_id, save_id, gallery_id, export_id, open_id, quit_id) = (
+            app_item.id().clone(),
             save_item.id().clone(),
             gallery_item.id().clone(),
             export_item.id().clone(),
@@ -579,7 +603,11 @@ fn main() {
         );
         thread::spawn(move || {
             while let Ok(ev) = MenuEvent::receiver().recv() {
-                if ev.id == save_id {
+                if ev.id == app_id {
+                    if let Ok(exe) = env::current_exe() {
+                        let _ = Command::new(exe).arg("--ui").spawn();
+                    }
+                } else if ev.id == save_id {
                     save_with_feedback(&cfg);
                 } else if ev.id == gallery_id {
                     if let Some(p) = gallery::build(&cfg) {

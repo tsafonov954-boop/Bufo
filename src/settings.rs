@@ -98,6 +98,18 @@ hotkey_save = \"Ctrl+Alt+F10\"   # Alt+F10 is taken by NVIDIA's overlay
 hotkey_quit = \"Ctrl+Alt+F11\"
 ";
 
+/// Write the settings file (used by the settings window). Comments from the
+/// first-run template are not preserved.
+pub fn save(cfg: &FileConfig) -> Result<(), String> {
+    let path = config_path().ok_or("no APPDATA")?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let body = toml::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    fs::write(&path, format!("# ClipRecorder settings (written by the settings window).\n{body}"))
+        .map_err(|e| e.to_string())
+}
+
 /// Load the settings file, creating it from the template on first run.
 pub fn load() -> FileConfig {
     let Some(path) = config_path() else { return FileConfig::default() };
