@@ -22,4 +22,4 @@ cargo test
 Config: `%APPDATA%\ClipRecorder\config.toml`; flags override it (`cliprecorder --help` style flags: `--buffer --clip --fps --bitrate --ui --export last --style crop`).
 
 ## Status
-Tested on a desktop; real-game FPS impact not yet measured. License: not chosen yet.
+Tested on a desktop; real-game FPS impact not yet measured. License: GPLv3 (see LICENSE).
