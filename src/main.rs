@@ -61,8 +61,14 @@ struct Config {
     audio: bool,
     /// Mix the default microphone into the audio track (opt-in, `--mic`).
     mic: bool,
+    /// Clip folder size limit in GB, 0 = unlimited.
+    max_clips_gb: f64,
+    /// Delete clips older than this many days, 0 = keep forever.
+    keep_days: u64,
     hotkey_save: String,
     hotkey_quit: String,
+    /// Test/maintenance mode: only run the clip cleanup, then exit.
+    cleanup_only: bool,
     /// "wgc" (native, default) or "ffmpeg" (fallback path).
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
@@ -85,8 +91,11 @@ fn parse_args() -> Config {
         bitrate: 6_000_000,
         audio: true,
         mic: false,
+        max_clips_gb: 0.0,
+        keep_days: 0,
         hotkey_save: "Ctrl+Alt+F10".to_string(),
         hotkey_quit: "Ctrl+Alt+F11".to_string(),
+        cleanup_only: false,
         capture: "wgc".to_string(),
         save_after: None,
     };
@@ -101,6 +110,8 @@ fn parse_args() -> Config {
     c.bitrate = f.bitrate.unwrap_or(c.bitrate);
     c.audio = f.audio.unwrap_or(c.audio);
     c.mic = f.mic.unwrap_or(c.mic);
+    c.max_clips_gb = f.max_clips_gb.unwrap_or(c.max_clips_gb);
+    c.keep_days = f.keep_days.unwrap_or(c.keep_days);
     c.hotkey_save = f.hotkey_save.unwrap_or(c.hotkey_save);
     c.hotkey_quit = f.hotkey_quit.unwrap_or(c.hotkey_quit);
     if let Some(s) = f.segment_secs {
@@ -125,6 +136,13 @@ fn parse_args() -> Config {
             }
             "--mic" => {
                 c.mic = true;
+                i += 1;
+                continue;
+            }
+            "--max-gb" => c.max_clips_gb = val.parse().unwrap_or(c.max_clips_gb),
+            "--keep-days" => c.keep_days = val.parse().unwrap_or(c.keep_days),
+            "--cleanup" => {
+                c.cleanup_only = true;
                 i += 1;
                 continue;
             }
@@ -354,11 +372,64 @@ fn make_icon() -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(rgba, n, n).expect("valid icon")
 }
 
+/// Delete old clips according to `keep_days` / `max_clips_gb`. Returns how many
+/// were removed. Only touches files named `clip_*.mp4` in the clips folder, and
+/// never the newest one (so a clip you just saved cannot vanish).
+fn cleanup_clips(cfg: &Config) -> usize {
+    if cfg.max_clips_gb <= 0.0 && cfg.keep_days == 0 {
+        return 0;
+    }
+    let Ok(rd) = fs::read_dir(&cfg.clips_dir) else { return 0 };
+    // (path, modified, size), oldest first
+    let mut clips: Vec<(PathBuf, SystemTime, u64)> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("clip_") && n.ends_with(".mp4")
+        })
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((e.path(), m.modified().ok()?, m.len()))
+        })
+        .collect();
+    clips.sort_by_key(|c| c.1);
+    if clips.len() < 2 {
+        return 0; // nothing but (at most) the newest clip: never delete it
+    }
+    let newest = clips.len() - 1;
+    let mut removed = 0;
+    let mut total: u64 = clips.iter().map(|c| c.2).sum();
+    let limit = (cfg.max_clips_gb * 1_073_741_824.0) as u64;
+    let max_age = Duration::from_secs(cfg.keep_days * 86_400);
+    let now = SystemTime::now();
+    for (i, (path, modified, size)) in clips.iter().enumerate() {
+        if i == newest {
+            break;
+        }
+        let too_old = cfg.keep_days > 0 && now.duration_since(*modified).is_ok_and(|a| a > max_age);
+        let too_big = cfg.max_clips_gb > 0.0 && total > limit;
+        if !(too_old || too_big) {
+            // Sorted oldest first: once the oldest is fine by age, only size can still apply.
+            if cfg.max_clips_gb <= 0.0 {
+                break;
+            }
+            continue;
+        }
+        if fs::remove_file(path).is_ok() {
+            settings::log(&format!("auto-deleted {} ({} MB)", path.display(), size / 1_048_576));
+            total = total.saturating_sub(*size);
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Save a clip and give an audible confirmation.
 fn save_with_feedback(cfg: &Config) {
     match save_clip(cfg) {
         Some(path) => {
             settings::log(&format!("saved {}", path.display()));
+            cleanup_clips(cfg);
             unsafe {
                 MessageBeep(MB_OK);
             }
@@ -379,6 +450,10 @@ fn already_running() -> bool {
 
 fn main() {
     let cfg = Arc::new(parse_args());
+    if cfg.cleanup_only {
+        println!("cleanup: removed {} clip(s)", cleanup_clips(&cfg));
+        return;
+    }
     if cfg.save_after.is_none() && already_running() {
         eprintln!("ClipRecorder is already running");
         return;

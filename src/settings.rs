@@ -25,6 +25,10 @@ pub struct FileConfig {
     pub audio: Option<bool>,
     /// Mix the default microphone into the audio track.
     pub mic: Option<bool>,
+    /// Delete the oldest clips once the folder exceeds this many GB (0 = off).
+    pub max_clips_gb: Option<f64>,
+    /// Delete clips older than this many days (0 = off).
+    pub keep_days: Option<u64>,
     /// Hotkey that saves a clip, e.g. "Ctrl+Alt+F10".
     pub hotkey_save: Option<String>,
     /// Hotkey that quits the recorder.
@@ -88,6 +92,8 @@ bitrate = 6000000     # video bits per second
 segment_secs = 8      # buffer segment length (longer = fewer encoder restarts)
 audio = true          # system audio
 mic = false           # mix the microphone into the audio track
+max_clips_gb = 0      # auto-delete oldest clips above this size (0 = never)
+keep_days = 0         # auto-delete clips older than N days (0 = never)
 hotkey_save = \"Ctrl+Alt+F10\"   # Alt+F10 is taken by NVIDIA's overlay
 hotkey_quit = \"Ctrl+Alt+F11\"
 ";
