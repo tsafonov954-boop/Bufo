@@ -127,3 +127,34 @@ pub fn load() -> FileConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotkey_default() {
+        assert_eq!(parse_hotkey("Ctrl+Alt+F10"), Some((0x2 | 0x1, 0x79)));
+    }
+
+    #[test]
+    fn hotkey_letters_and_case() {
+        assert_eq!(parse_hotkey("shift + win + k"), Some((0x4 | 0x8, b'K' as u32)));
+    }
+
+    #[test]
+    fn hotkey_rejects_garbage() {
+        assert_eq!(parse_hotkey("Ctrl+Alt"), None);
+        assert_eq!(parse_hotkey("Ctrl+F99"), None);
+        assert_eq!(parse_hotkey("Ctrl+Banana"), None);
+    }
+
+    #[test]
+    fn config_roundtrip() {
+        let c = FileConfig { fps: Some(30), mic: Some(true), hotkey_save: Some("Ctrl+F9".into()), ..Default::default() };
+        let t = toml::to_string_pretty(&c).unwrap();
+        let back: FileConfig = toml::from_str(&t).unwrap();
+        assert_eq!((back.fps, back.mic), (Some(30), Some(true)));
+        assert_eq!(back.hotkey_save.as_deref(), Some("Ctrl+F9"));
+    }
+}
