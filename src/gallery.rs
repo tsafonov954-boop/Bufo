@@ -160,7 +160,7 @@ pub fn build(cfg: &Config) -> Option<PathBuf> {
 
 /// Open a file with its default program (the gallery opens in the browser).
 pub fn open(path: &Path) {
-    let _ = Command::new("explorer").arg(path).spawn();
+    crate::platform::open(path);
 }
 
 const PAGE: &str = r##"<!doctype html>

@@ -3,7 +3,6 @@
 //! from the tray), so it costs nothing while you are gaming.
 
 use std::{
-    os::windows::process::CommandExt,
     path::PathBuf,
     process::Command,
     sync::mpsc::{channel, Receiver, Sender},
@@ -11,17 +10,8 @@ use std::{
 };
 
 use eframe::egui::{self, Color32, RichText};
-use windows_sys::Win32::{
-    Foundation::CloseHandle,
-    System::{
-        Threading::OpenMutexW,
-        Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION},
-    },
-};
 
 use crate::{export, gallery, settings, Config};
-
-const SYNCHRONIZE: u32 = 0x0010_0000;
 
 const ACCENT: Color32 = Color32::from_rgb(230, 58, 58);
 const BG: Color32 = Color32::from_rgb(15, 17, 21);
@@ -31,28 +21,13 @@ const LINE: Color32 = Color32::from_rgb(42, 47, 58);
 const MUTED: Color32 = Color32::from_rgb(139, 147, 163);
 const OK: Color32 = Color32::from_rgb(76, 201, 120);
 
-/// Is the background recorder running? (It holds a named mutex.)
+/// Is the background recorder running?
 fn recorder_running() -> bool {
-    let name: Vec<u16> = "Local\\BufoSingleInstance\0".encode_utf16().collect();
-    unsafe {
-        let h = OpenMutexW(SYNCHRONIZE, 0, name.as_ptr());
-        if h.is_null() {
-            false
-        } else {
-            CloseHandle(h);
-            true
-        }
-    }
+    crate::platform::instance_running("BufoSingleInstance")
 }
 
-/// Local time zone offset from UTC in seconds (includes daylight saving).
 fn local_offset_secs() -> i64 {
-    unsafe {
-        let mut tz: TIME_ZONE_INFORMATION = std::mem::zeroed();
-        let kind = GetTimeZoneInformation(&mut tz);
-        let extra = if kind == 2 { tz.DaylightBias } else { tz.StandardBias };
-        -((tz.Bias + extra) as i64) * 60
-    }
+    crate::platform::local_offset_secs()
 }
 
 struct Clip {
@@ -241,12 +216,10 @@ impl App {
     fn do_action(&mut self, a: Action) {
         match a {
             Action::Play(i) => {
-                let _ = Command::new("explorer").arg(&self.clips[i].path).spawn();
+                crate::platform::open(&self.clips[i].path);
             }
             Action::Show(i) => {
-                let _ = Command::new("explorer")
-                    .raw_arg(format!("/select,\"{}\"", self.clips[i].path.display()))
-                    .spawn();
+                crate::platform::reveal(&self.clips[i].path);
             }
             Action::SaveMeta(i) => {
                 let c = &mut self.clips[i];

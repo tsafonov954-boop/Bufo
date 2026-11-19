@@ -19,29 +19,39 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
 mod audio;
+#[cfg(windows)]
 mod dda;
 mod export;
 mod gallery;
+mod platform;
 mod settings;
 mod ui;
+#[cfg(windows)]
 mod wgc;
+#[cfg(windows)]
 mod winfo;
+#[cfg(not(windows))]
+mod winfo {
+    //! Foreground-app detection is not implemented on this platform yet.
+    #[allow(dead_code)]
+    pub fn start_tracker() {}
+    pub fn last_app() -> String {
+        String::new()
+    }
+}
 
+#[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
-    System::{
-        Diagnostics::Debug::MessageBeep,
-        Threading::{CreateMutexW, GetCurrentThreadId},
-    },
+    Foundation::GetLastError,
+    System::Threading::GetCurrentThreadId,
     UI::{
         Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT},
-        WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MB_OK, MSG,
-            WM_HOTKEY, WM_QUIT,
-        },
+        WindowsAndMessaging::{DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MSG, WM_HOTKEY, WM_QUIT},
     },
 };
+#[cfg(windows)]
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIconBuilder,
@@ -95,6 +105,7 @@ struct Config {
 
 fn parse_args() -> Config {
     let base = env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("Videos");
@@ -235,6 +246,7 @@ fn ffmpeg_bin() -> String {
     .clone()
 }
 
+#[cfg(windows)]
 #[derive(Clone, Copy, PartialEq)]
 enum Capture {
     /// DXGI desktop duplication, frames stay on the GPU (fast path).
@@ -243,6 +255,7 @@ enum Capture {
     Gdi,
 }
 
+#[cfg(windows)]
 fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
     fs::create_dir_all(&c.buffer_dir)?;
     let pattern = c.buffer_dir.join("seg_%06d.ts");
@@ -274,6 +287,7 @@ fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
 }
 
 /// Start with the GPU path; if no segment shows up in time, fall back to GDI.
+#[cfg(windows)]
 fn start_with_fallback(c: &Config) -> std::io::Result<Child> {
     let mut child = start_recorder(c, Capture::Dda)?;
     for _ in 0..12 {
@@ -289,6 +303,66 @@ fn start_with_fallback(c: &Config) -> std::io::Result<Child> {
     let child = start_recorder(c, Capture::Gdi)?;
     println!("capture: gdigrab (CPU copy)");
     Ok(child)
+}
+
+/// Hardware encoder arguments for Linux: NVENC, then VAAPI, then software x264.
+#[cfg(not(windows))]
+fn linux_encoder(c: &Config) -> (Vec<String>, Vec<String>, &'static str) {
+    let list = Command::new(ffmpeg_bin())
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    let br = c.bitrate.to_string();
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    if list.contains("hevc_nvenc") {
+        (vec![], s(&["-c:v", "hevc_nvenc", "-preset", "p4", "-b:v", &br, "-maxrate", "16M", "-bufsize", "32M"]), "NVENC")
+    } else if list.contains("hevc_vaapi") && Path::new("/dev/dri/renderD128").exists() {
+        (
+            s(&["-vaapi_device", "/dev/dri/renderD128"]),
+            s(&["-vf", "format=nv12,hwupload", "-c:v", "hevc_vaapi", "-b:v", &br]),
+            "VAAPI",
+        )
+    } else {
+        (vec![], s(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &br]), "x264 (software)")
+    }
+}
+
+/// Linux: X11 screen grab through ffmpeg (Wayland needs the portal, not done yet).
+#[cfg(not(windows))]
+fn start_linux(c: &Config) -> Result<Child, String> {
+    if env::var_os("DISPLAY").is_none() {
+        return Err("no X11 display (Wayland capture is not implemented yet)".into());
+    }
+    fs::create_dir_all(&c.buffer_dir).map_err(|e| e.to_string())?;
+    clean_buffer(&c.buffer_dir);
+    let pattern = c.buffer_dir.join("seg_%06d.ts");
+    let gop = (c.fps as u64 * seg_secs()).to_string();
+    let log = fs::File::create(c.buffer_dir.join("ffmpeg.log")).map_err(|e| e.to_string())?;
+    let (pre, enc, name) = linux_encoder(c);
+    println!("encoder: {name}");
+    let display = env::var("DISPLAY").unwrap_or_else(|_| ":0.0".into());
+    let mut cmd = Command::new(ffmpeg_bin());
+    cmd.args(["-hide_banner", "-loglevel", "warning", "-y"]).args(&pre);
+    cmd.args(["-f", "x11grab", "-framerate"]).arg(c.fps.to_string()).args(["-i", &display]);
+    if c.audio {
+        // Monitor of the default output = everything you hear.
+        cmd.args(["-f", "pulse", "-i", "@DEFAULT_MONITOR@"]);
+    }
+    cmd.args(&enc).args(["-g", &gop, "-force_key_frames", &format!("expr:gte(t,n_forced*{})", seg_secs())]);
+    if c.audio {
+        cmd.args(["-c:a", "aac", "-b:a", "160k"]);
+    } else {
+        cmd.arg("-an");
+    }
+    cmd.args(["-f", "segment", "-segment_time", &seg_secs().to_string()])
+        .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
+        .arg(pattern)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log))
+        .spawn()
+        .map_err(|e| e.to_string())
 }
 
 /// Sorted list of segment files (oldest first).
@@ -378,7 +452,9 @@ fn clean_buffer(dir: &Path) {
 
 enum Rec {
     Ffmpeg(Child),
+    #[cfg(windows)]
     Wgc(wgc::Control),
+    #[cfg(windows)]
     Dda(dda::Control),
 }
 
@@ -389,7 +465,9 @@ impl Rec {
                 let _ = c.kill();
                 let _ = c.wait();
             }
+            #[cfg(windows)]
             Rec::Dda(c) => c.stop(),
+            #[cfg(windows)]
             Rec::Wgc(c) => {
                 let _ = c.stop();
             }
@@ -397,6 +475,7 @@ impl Rec {
     }
 }
 
+#[cfg(windows)]
 fn start_wgc(c: &Config) -> Result<Rec, String> {
     fs::create_dir_all(&c.buffer_dir).map_err(|e| e.to_string())?;
     clean_buffer(&c.buffer_dir);
@@ -411,6 +490,7 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
     Ok(Rec::Wgc(ctl))
 }
 
+#[cfg(windows)]
 fn start_dda(c: &Config) -> Result<Rec, String> {
     fs::create_dir_all(&c.buffer_dir).map_err(|e| e.to_string())?;
     clean_buffer(&c.buffer_dir);
@@ -422,6 +502,7 @@ fn start_dda(c: &Config) -> Result<Rec, String> {
     Ok(Rec::Dda(ctl))
 }
 
+#[cfg(windows)]
 fn start_capture(c: &Config) -> Option<Rec> {
     if c.capture == "dda" {
         match start_dda(c) {
@@ -452,6 +533,7 @@ fn start_capture(c: &Config) -> Option<Rec> {
 }
 
 /// 32x32 red "recording" dot with a white ring, generated in code.
+#[cfg(windows)]
 fn make_icon() -> tray_icon::Icon {
     let n = 32u32;
     let mut rgba = Vec::with_capacity((n * n * 4) as usize);
@@ -534,55 +616,58 @@ fn save_with_feedback(cfg: &Config) {
             if cfg.clipboard {
                 copy_to_clipboard(&path);
             }
-            unsafe {
-                MessageBeep(MB_OK);
-            }
+            platform::beep();
         }
         None => settings::log("save failed (buffer empty or ffmpeg error)"),
     }
 }
 
 /// Put the clip file on the clipboard as a file (Ctrl+V pastes it into chats).
-/// Done on a short-lived thread via PowerShell so the hotkey loop never blocks.
+/// Done on a short-lived thread so the hotkey loop never blocks.
 fn copy_to_clipboard(path: &std::path::Path) {
-    use std::os::windows::process::CommandExt;
     let path = path.to_path_buf();
     std::thread::spawn(move || {
-        let ok = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -LiteralPath $env:BUFO_CLIP"])
-            .env(
-                "BUFO_CLIP",
-                fs::canonicalize(&path)
-                    .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
-                    .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
-            )
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .stdin(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
+        let ok = platform::copy_file_to_clipboard(&path);
         settings::log(if ok { "clip copied to clipboard" } else { "clipboard copy failed" });
     });
 }
 
 /// Only one recorder may run: two would fight over the buffer folder.
 fn already_running() -> bool {
-    named_mutex_exists("Local\\BufoSingleInstance")
+    platform::claim_instance("BufoSingleInstance")
 }
 
-/// Create the named mutex; true if someone else already owns it.
-fn named_mutex_exists(name: &str) -> bool {
-    let name: Vec<u16> = format!("{name}\0").encode_utf16().collect();
-    unsafe {
-        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-        // The handle is intentionally kept open for the life of the process.
-        handle.is_null() || GetLastError() == ERROR_ALREADY_EXISTS
+/// Linux: capture through ffmpeg (X11). Windows has its own native path above.
+#[cfg(not(windows))]
+fn start_capture(c: &Config) -> Option<Rec> {
+    match start_linux(c) {
+        Ok(ch) => Some(Rec::Ffmpeg(ch)),
+        Err(e) => {
+            eprintln!("capture failed: {e}");
+            None
+        }
+    }
+}
+
+/// Linux: no tray or global hotkey yet, so control the recorder from the
+/// terminal: `save`, `quit`. (X11 hotkeys and a tray are the next step.)
+#[cfg(not(windows))]
+fn run_interactive(cfg: &Arc<Config>) {
+    use std::io::BufRead;
+    println!("type 'save' to save a clip, 'quit' to exit");
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        match line.trim() {
+            "save" | "s" => save_with_feedback(cfg),
+            "quit" | "q" => break,
+            _ => {}
+        }
     }
 }
 
 fn main() {
     let cfg = Arc::new(parse_args());
     if cfg.ui {
-        if !named_mutex_exists("Local\\BufoUiInstance") {
+        if !platform::claim_instance("BufoUiInstance") {
             ui::run((*cfg).clone());
         }
         return;
@@ -650,6 +735,13 @@ fn main() {
         return;
     }
 
+    run_interactive(&cfg);
+    stop();
+}
+
+/// Tray icon, hotkeys and the Windows message loop; returns when the user quits.
+#[cfg(windows)]
+fn run_interactive(cfg: &Arc<Config>) {
     // Tray icon + menu. Its window lives on this thread, so the message loop
     // below must dispatch messages for it.
     let save_item = MenuItem::new(format!("Save clip ({})", cfg.hotkey_save), true, None);
@@ -706,15 +798,13 @@ fn main() {
                     match made {
                         Some(p) => {
                             settings::log(&format!("exported {}", p.display()));
-                            unsafe {
-                                MessageBeep(MB_OK);
-                            }
+                            platform::beep();
                         }
                         None => settings::log("export failed (no clip yet, or ffmpeg error)"),
                     }
                 } else if ev.id == open_id {
                     let _ = fs::create_dir_all(&cfg.clips_dir);
-                    let _ = Command::new("explorer").arg(&cfg.clips_dir).spawn();
+                    platform::open(&cfg.clips_dir);
                 } else if ev.id == quit_id {
                     unsafe {
                         PostThreadMessageW(main_thread, WM_QUIT, 0, 0);
@@ -757,5 +847,4 @@ fn main() {
             }
         }
     }
-    stop();
 }

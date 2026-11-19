@@ -79,7 +79,14 @@ pub fn log(msg: &str) {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    let roaming = PathBuf::from(env::var("APPDATA").ok()?);
+    // Windows: %APPDATA%\Bufo. Linux: $XDG_CONFIG_HOME/Bufo or ~/.config/Bufo.
+    let roaming = match env::var("APPDATA") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| env::var("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .ok()?,
+    };
     let (new, old) = (roaming.join("Bufo"), roaming.join("ClipRecorder"));
     // One-time migration of settings from the pre-rename folder.
     if !new.exists() && old.exists() {

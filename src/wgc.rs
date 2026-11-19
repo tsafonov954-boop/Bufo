@@ -87,7 +87,7 @@ impl Recorder {
 
     /// Start the next segment's encoder ahead of time and switch when the
     /// current segment is full.
-    fn rotate(&mut self) {
+    pub fn rotate(&mut self) {
         let seg = Duration::from_secs(self.seg_secs);
         let el = self.seg_started.elapsed();
 
@@ -131,17 +131,6 @@ impl Recorder {
         if let Some(enc) = self.encoder.as_mut() {
             Self::drain_audio(enc, &self.audio_rx);
             if let Err(e) = enc.send_texture(tex, ts) {
-                crate::settings::log(&format!("frame send failed: {e}"));
-            }
-        }
-    }
-
-    /// Send one raw BGRA bottom-to-top frame (`ts` in 100 ns units).
-    pub fn push_buffer(&mut self, buf: &[u8], ts: i64) {
-        self.rotate();
-        if let Some(enc) = self.encoder.as_mut() {
-            Self::drain_audio(enc, &self.audio_rx);
-            if let Err(e) = enc.send_frame_buffer(buf, ts) {
                 crate::settings::log(&format!("frame send failed: {e}"));
             }
         }
