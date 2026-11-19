@@ -128,8 +128,8 @@ fn parse_args() -> Config {
         clipboard: true,
         max_clips_gb: 0.0,
         keep_days: 0,
-        hotkey_save: "Ctrl+Alt+F10".to_string(),
-        hotkey_quit: "Ctrl+Alt+F11".to_string(),
+        hotkey_save: platform::DEFAULT_HOTKEY_SAVE.to_string(),
+        hotkey_quit: platform::DEFAULT_HOTKEY_QUIT.to_string(),
         cleanup_only: false,
         gallery: false,
         gallery_open: false,
@@ -315,17 +315,32 @@ fn linux_encoder(c: &Config) -> (Vec<String>, Vec<String>, &'static str) {
         .unwrap_or_default();
     let br = c.bitrate.to_string();
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    // Being listed only means ffmpeg was built with it; try a real 1-frame encode.
+    let works = |pre: &[String], enc: &[String]| {
+        Command::new(ffmpeg_bin())
+            .args(["-hide_banner", "-loglevel", "quiet"])
+            .args(pre)
+            .args(["-f", "lavfi", "-i", "color=size=320x180:rate=1", "-frames:v", "1"])
+            .args(enc)
+            .args(["-f", "null", "-"])
+            .stdin(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
     if list.contains("hevc_nvenc") {
-        (vec![], s(&["-c:v", "hevc_nvenc", "-preset", "p4", "-b:v", &br, "-maxrate", "16M", "-bufsize", "32M"]), "NVENC")
-    } else if list.contains("hevc_vaapi") && Path::new("/dev/dri/renderD128").exists() {
-        (
-            s(&["-vaapi_device", "/dev/dri/renderD128"]),
-            s(&["-vf", "format=nv12,hwupload", "-c:v", "hevc_vaapi", "-b:v", &br]),
-            "VAAPI",
-        )
-    } else {
-        (vec![], s(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &br]), "x264 (software)")
+        let enc = s(&["-c:v", "hevc_nvenc", "-preset", "p4", "-b:v", &br, "-maxrate", "16M", "-bufsize", "32M"]);
+        if works(&[], &enc) {
+            return (vec![], enc, "NVENC");
+        }
     }
+    if list.contains("hevc_vaapi") && Path::new("/dev/dri/renderD128").exists() {
+        let pre = s(&["-vaapi_device", "/dev/dri/renderD128"]);
+        let enc = s(&["-vf", "format=nv12,hwupload", "-c:v", "hevc_vaapi", "-b:v", &br]);
+        if works(&pre, &enc) {
+            return (pre, enc, "VAAPI");
+        }
+    }
+    (vec![], s(&["-c:v", "libx264", "-preset", "veryfast", "-b:v", &br]), "x264 (software)")
 }
 
 /// Linux: X11 screen grab through ffmpeg (Wayland needs the portal, not done yet).
@@ -649,19 +664,82 @@ fn start_capture(c: &Config) -> Option<Rec> {
     }
 }
 
-/// Linux: no tray or global hotkey yet, so control the recorder from the
-/// terminal: `save`, `quit`. (X11 hotkeys and a tray are the next step.)
+/// Linux: global hotkeys on X11 (no tray yet); `save` / `quit` typed in the
+/// terminal also work.
 #[cfg(not(windows))]
 fn run_interactive(cfg: &Arc<Config>) {
-    use std::io::BufRead;
-    println!("type 'save' to save a clip, 'quit' to exit");
-    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
-        match line.trim() {
-            "save" | "s" => save_with_feedback(cfg),
-            "quit" | "q" => break,
-            _ => {}
+    use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+    use std::{io::BufRead, str::FromStr, sync::mpsc};
+
+    #[derive(Clone, Copy)]
+    enum Cmd {
+        Save,
+        Quit,
+    }
+    // global-hotkey wants "super", not "win".
+    let parse = |text: &str| HotKey::from_str(&text.to_ascii_lowercase().replace("win", "super")).ok();
+    let (save_hk, quit_hk) = (parse(&cfg.hotkey_save), parse(&cfg.hotkey_quit));
+
+    // Keep the manager alive for as long as we listen.
+    let manager = GlobalHotKeyManager::new()
+        .map_err(|e| eprintln!("global hotkeys unavailable: {e} (X11 only; use the terminal)"))
+        .ok();
+    if let Some(m) = &manager {
+        for (name, hk) in [("save", save_hk), ("quit", quit_hk)] {
+            match hk {
+                Some(hk) => {
+                    if let Err(e) = m.register(hk) {
+                        eprintln!("hotkey for {name} not registered: {e}");
+                    }
+                }
+                None => eprintln!("hotkey for {name} not understood"),
+            }
         }
     }
+
+    let (tx, rx) = mpsc::channel::<Cmd>();
+    {
+        let tx = tx.clone();
+        let (sid, qid) = (save_hk.map(|h| h.id()), quit_hk.map(|h| h.id()));
+        thread::spawn(move || {
+            for ev in GlobalHotKeyEvent::receiver() {
+                if ev.state != HotKeyState::Pressed {
+                    continue;
+                }
+                let cmd = if Some(ev.id) == sid {
+                    Cmd::Save
+                } else if Some(ev.id) == qid {
+                    Cmd::Quit
+                } else {
+                    continue;
+                };
+                if tx.send(cmd).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    // Terminal control; when stdin is closed (launched from a menu) this just ends.
+    thread::spawn(move || {
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            let cmd = match line.trim() {
+                "save" | "s" => Cmd::Save,
+                "quit" | "q" => Cmd::Quit,
+                _ => continue,
+            };
+            if tx.send(cmd).is_err() {
+                break;
+            }
+        }
+    });
+    println!("type 'save' to save a clip, 'quit' to exit");
+    for cmd in rx {
+        match cmd {
+            Cmd::Save => save_with_feedback(cfg),
+            Cmd::Quit => break,
+        }
+    }
+    drop(manager);
 }
 
 fn main() {

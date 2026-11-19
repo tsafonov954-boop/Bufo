@@ -110,9 +110,16 @@ mic = false           # mix the microphone into the audio track
 clipboard = true      # copy the saved clip to the clipboard (paste into chats)
 max_clips_gb = 0      # auto-delete oldest clips above this size (0 = never)
 keep_days = 0         # auto-delete clips older than N days (0 = never)
-hotkey_save = \"Ctrl+Alt+F10\"   # Alt+F10 is taken by NVIDIA's overlay
-hotkey_quit = \"Ctrl+Alt+F11\"
 ";
+
+/// Hotkey lines depend on the OS (see `platform::DEFAULT_HOTKEY_SAVE`).
+fn template() -> String {
+    format!(
+        "{TEMPLATE}hotkey_save = \"{}\"   # Alt+F10 is taken by NVIDIA's overlay on Windows\nhotkey_quit = \"{}\"\n",
+        crate::platform::DEFAULT_HOTKEY_SAVE,
+        crate::platform::DEFAULT_HOTKEY_QUIT
+    )
+}
 
 /// Write the settings file (used by the settings window). Comments from the
 /// first-run template are not preserved.
@@ -138,7 +145,7 @@ pub fn load() -> FileConfig {
             if let Some(dir) = path.parent() {
                 let _ = fs::create_dir_all(dir);
             }
-            let _ = fs::write(&path, TEMPLATE);
+            let _ = fs::write(&path, template());
             FileConfig::default()
         }
     }

@@ -170,6 +170,16 @@ mod imp {
 
 pub use imp::*;
 
+// Ctrl+Alt+F1..F12 switches virtual consoles on Linux, so use Ctrl+Shift there.
+#[cfg(windows)]
+pub const DEFAULT_HOTKEY_SAVE: &str = "Ctrl+Alt+F10";
+#[cfg(windows)]
+pub const DEFAULT_HOTKEY_QUIT: &str = "Ctrl+Alt+F11";
+#[cfg(not(windows))]
+pub const DEFAULT_HOTKEY_SAVE: &str = "Ctrl+Shift+F10";
+#[cfg(not(windows))]
+pub const DEFAULT_HOTKEY_QUIT: &str = "Ctrl+Shift+F11";
+
 /// Keep a spawned helper from flashing a console window (Windows only).
 #[allow(unused_variables)]
 pub fn no_window(cmd: &mut Command) {

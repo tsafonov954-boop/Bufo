@@ -103,8 +103,8 @@ impl Form {
             clipboard: true,
             max_clips_gb: 0.0,
             keep_days: 0,
-            hotkey_save: "Ctrl+Alt+F10".into(),
-            hotkey_quit: "Ctrl+Alt+F11".into(),
+            hotkey_save: crate::platform::DEFAULT_HOTKEY_SAVE.into(),
+            hotkey_quit: crate::platform::DEFAULT_HOTKEY_QUIT.into(),
         }
     }
 
