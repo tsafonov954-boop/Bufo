@@ -24,6 +24,26 @@ mod imp {
         }
     }
 
+    /// Desktop notification (Windows toast). Fire and forget; text goes through
+    /// environment variables so it can never be interpreted as script.
+    pub fn notify(title: &str, body: &str) {
+        const SCRIPT: &str = "\
+$null=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];\
+$x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(1);\
+$n=$x.GetElementsByTagName('text');\
+$n.Item(0).AppendChild($x.CreateTextNode($env:BUFO_T))|Out-Null;\
+$n.Item(1).AppendChild($x.CreateTextNode($env:BUFO_B))|Out-Null;\
+$t=[Windows.UI.Notifications.ToastNotification]::new($x);\
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($t)";
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+            .env("BUFO_T", title)
+            .env("BUFO_B", body)
+            .creation_flags(0x0800_0000)
+            .stdin(std::process::Stdio::null())
+            .spawn();
+    }
+
     /// Open a file or folder with the default program.
     pub fn open(path: &Path) {
         let _ = Command::new("explorer").arg(path).spawn();
@@ -121,6 +141,11 @@ mod imp {
     pub fn beep() {
         // Terminal bell; desktop sounds are not portable.
         let _ = std::io::stderr().write_all(b"\x07");
+    }
+
+    /// Desktop notification through `notify-send` (silently skipped if absent).
+    pub fn notify(title: &str, body: &str) {
+        let _ = Command::new("notify-send").args(["--app-name=Bufo", title, body]).spawn();
     }
 
     pub fn open(path: &Path) {

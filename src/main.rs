@@ -650,6 +650,9 @@ fn save_with_feedback(cfg: &Config) {
                 copy_to_clipboard(&path);
             }
             platform::beep();
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let extra = if cfg.clipboard { " Copied to clipboard." } else { "" };
+            platform::notify("Bufo: clip saved", &format!("{name}.{extra}"));
         }
         None => settings::log("save failed (buffer empty or ffmpeg error)"),
     }
