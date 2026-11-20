@@ -18,6 +18,10 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+#[cfg(windows)]
+use std::sync::mpsc::Receiver;
+#[cfg(windows)]
+use std::time::Instant;
 
 #[cfg(windows)]
 mod audio;
@@ -107,7 +111,8 @@ struct Config {
     shot_only: bool,
     export_from: Option<f64>,
     export_to: Option<f64>,
-    /// "dda" (desktop duplication, default; works with fullscreen games), "wgc" or "ffmpeg".
+    /// "auto" (default: ffmpeg ddagrab + NVENC when available, lowest CPU), "dda" (built-in
+    /// Media Foundation encoder), "wgc" or "ffmpeg".
     capture: String,
     /// Test mode: save one clip after N seconds, then exit.
     save_after: Option<u64>,
@@ -154,7 +159,7 @@ fn parse_args() -> Config {
         shot_only: false,
         export_from: None,
         export_to: None,
-        capture: "dda".to_string(),
+        capture: "auto".to_string(),
         save_after: None,
     };
     // Settings file overrides the defaults; command-line flags override both.
@@ -298,7 +303,7 @@ enum Capture {
 }
 
 #[cfg(windows)]
-fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
+fn start_recorder(c: &Config, cap: Capture, audio: bool) -> std::io::Result<Child> {
     fs::create_dir_all(&c.buffer_dir)?;
     let pattern = c.buffer_dir.join("seg_%06d.ts");
     let gop = (c.fps as u64 * seg_secs()).to_string();
@@ -316,22 +321,69 @@ fn start_recorder(c: &Config, cap: Capture) -> std::io::Result<Child> {
                 .args(["-i", "desktop"]);
         }
     }
-    cmd.args(["-c:v", "hevc_nvenc", "-preset", "p4", "-rc", "vbr"])
+    if audio {
+        // Raw PCM from our WASAPI thread arrives on stdin.
+        cmd.args(["-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0", "-map", "0:v", "-map", "1:a"]);
+    }
+    cmd.args(["-c:v", "hevc_nvenc", "-preset", "p1", "-rc", "vbr"])
         .args(["-cq", &c.cq.to_string(), "-b:v", "0", "-maxrate", "16M", "-bufsize", "32M"])
-        .args(["-g", &gop, "-forced-idr", "1", "-an"])
+        .args(["-g", &gop, "-forced-idr", "1"]);
+    if audio {
+        cmd.args(["-c:a", "aac", "-b:a", "160k"]);
+    } else {
+        cmd.arg("-an");
+    }
+    cmd
         .args(["-f", "segment", "-segment_time", &seg_secs().to_string()])
         .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
         .arg(pattern)
-        .stdin(Stdio::null())
+        .stdin(if audio { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
         .spawn()
 }
 
+/// Feed the audio thread's PCM to ffmpeg's stdin, dropping the stale backlog
+/// so audio and video start together (ffmpeg needs audio to begin at all).
+#[cfg(windows)]
+fn pipe_audio(child: &mut Child, rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>, dir: PathBuf) {
+    use std::io::Write;
+    let Some(mut stdin) = child.stdin.take() else { return };
+    thread::spawn(move || {
+        let Ok(rx) = rx.lock() else { return };
+        while rx.try_recv().is_ok() {}
+        // ffmpeg starts the audio clock at the first byte but the video clock only
+        // when the encoder delivers its first frame (about D seconds later). Once the
+        // first segment shows up, drop D seconds of audio so both clocks agree.
+        let t0 = Instant::now();
+        let mut skip: Option<usize> = None; // bytes still to drop
+        while let Ok(chunk) = rx.recv() {
+            if skip.is_none() && (!segments(&dir).is_empty() || t0.elapsed() > Duration::from_secs(5)) {
+                let d = t0.elapsed().as_secs_f64();
+                skip = Some((d * 48_000.0) as usize * 4);
+            }
+            if let Some(left) = skip.as_mut() {
+                if *left > 0 {
+                    *left = left.saturating_sub(chunk.len());
+                    continue;
+                }
+            }
+            if stdin.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 /// Start with the GPU path; if no segment shows up in time, fall back to GDI.
 #[cfg(windows)]
-fn start_with_fallback(c: &Config) -> std::io::Result<Child> {
-    let mut child = start_recorder(c, Capture::Dda)?;
+fn start_with_fallback(c: &Config, audio: Option<Receiver<Vec<u8>>>) -> std::io::Result<Child> {
+    let has_audio = audio.is_some();
+    let audio = audio.map(|r| Arc::new(std::sync::Mutex::new(r)));
+    let mut child = start_recorder(c, Capture::Dda, has_audio)?;
+    if let Some(rx) = &audio {
+        pipe_audio(&mut child, Arc::clone(rx), c.buffer_dir.clone());
+    }
     for _ in 0..12 {
         thread::sleep(Duration::from_millis(500));
         if !segments(&c.buffer_dir).is_empty() {
@@ -342,7 +394,10 @@ fn start_with_fallback(c: &Config) -> std::io::Result<Child> {
     eprintln!("ddagrab produced no frames, falling back to gdigrab");
     let _ = child.kill();
     let _ = child.wait();
-    let child = start_recorder(c, Capture::Gdi)?;
+    let mut child = start_recorder(c, Capture::Gdi, has_audio)?;
+    if let Some(rx) = &audio {
+        pipe_audio(&mut child, Arc::clone(rx), c.buffer_dir.clone());
+    }
     println!("capture: gdigrab (CPU copy)");
     Ok(child)
 }
@@ -573,8 +628,24 @@ fn start_dda(c: &Config) -> Result<Rec, String> {
     Ok(Rec::Dda(ctl))
 }
 
+/// Can ffmpeg encode with NVENC on this machine?
+#[cfg(windows)]
+fn nvenc_works() -> bool {
+    let mut cmd = Command::new(ffmpeg_bin());
+    cmd.args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2"])
+        .args(["-frames:v", "1", "-c:v", "hevc_nvenc", "-f", "null", "-"])
+        .stdin(Stdio::null());
+    platform::no_window(&mut cmd);
+    cmd.status().is_ok_and(|s| s.success())
+}
+
 #[cfg(windows)]
 fn start_capture(c: &Config) -> Option<Rec> {
+    let mut c = c.clone();
+    if c.capture == "auto" {
+        c.capture = if nvenc_works() { "ffmpeg" } else { "dda" }.to_string();
+    }
+    let c = &c;
     if c.capture == "dda" {
         match start_dda(c) {
             Ok(r) => {
@@ -594,7 +665,8 @@ fn start_capture(c: &Config) -> Option<Rec> {
         }
     }
     clean_buffer(&c.buffer_dir);
-    match start_with_fallback(c) {
+    let audio_rx = if c.audio { audio::start(c.mic, c.mic_track.then(|| c.buffer_dir.clone())) } else { None };
+    match start_with_fallback(c, audio_rx) {
         Ok(ch) => Some(Rec::Ffmpeg(ch)),
         Err(e) => {
             eprintln!("failed to start ffmpeg (is it in PATH?): {e}");
