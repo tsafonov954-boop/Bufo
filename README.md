@@ -1,25 +1,30 @@
 # Bufo
 
-Lightweight instant-replay clip recorder for Windows, written in Rust (a Medal.tv alternative).
+Lightweight instant-replay clip recorder, written in Rust (a Medal.tv alternative).
 Records the screen into a disk ring buffer with the hardware encoder, so RAM stays low; one hotkey saves the last N seconds instantly.
 
 ## Features
-- Windows Graphics Capture + Media Foundation hardware HEVC, AAC audio (system + optional mic)
+- Desktop Duplication capture (works with borderless-fullscreen games) + Media Foundation hardware HEVC, AAC audio (system + optional mic)
 - Disk ring buffer (default 15 min); saving is a stream-copy concat (instant)
-- Hotkeys (default `Ctrl+Alt+F10` save, `Ctrl+Alt+F11` quit), tray icon
-- Window app (`--ui`): clip grid, search, game filter, rename/tags, delete, settings
-- Single-file HTML gallery (`--gallery`), 9:16 export (blur or crop, trim)
-- Auto-cleanup by size / age
+- Hotkeys for save / screenshot / quit, tray icon, desktop notification and sound on save
+- Saved clip is copied to the clipboard as a file (paste straight into chats)
+- Window app (`--ui`): clip grid, search, game filter, rename/tags, favorites, delete, settings
+- Built-in trim editor with a film strip, GIF export, 9:16 export (blur or crop)
+- Single-file HTML gallery (`--gallery`)
+- Auto-cleanup by size / age (favorites are kept)
+- Start with the system (settings checkbox or `--autostart on|off|status`); saving settings restarts the recorder
 
 ## Requirements
-Windows 10/11, ffmpeg in PATH (or `FFMPEG` env var).
+ffmpeg in PATH (or the `FFMPEG` env var). Windows 10/11 or Linux (X11).
 
 ## Build / test
 ```
 cargo build --release
 cargo test
 ```
-Config: `%APPDATA%\Bufo\config.toml`; flags override it (`bufo --help` style flags: `--buffer --clip --fps --bitrate --ui --export last --style crop`).
+Config: `%APPDATA%\Bufo\config.toml` (Linux: `~/.config/Bufo/config.toml`); flags override it.
+Useful flags: `--buffer --clip --fps --bitrate --out --ui --screenshot --restart --autostart on|off|status`,
+`--export last --style crop` (9:16), `--trim last --from 2 --to 7`, `--gif last`.
 
 ## Status
 Tested on a desktop; real-game FPS impact not yet measured. License: GPLv3 (see LICENSE).
@@ -27,10 +32,10 @@ Tested on a desktop; real-game FPS impact not yet measured. License: GPLv3 (see 
 ## Platforms
 | | Windows 10/11 | Linux |
 |---|---|---|
-| Capture | Desktop Duplication (GPU, works with fullscreen games), WGC / ffmpeg fallbacks | X11 via ffmpeg `x11grab` (**experimental, untested on real hardware**); Wayland not yet |
-| Encoder | Media Foundation hardware HEVC | ffmpeg: NVENC, VAAPI, or software x264 |
-| Audio | WASAPI loopback (+ mic) | PulseAudio/PipeWire monitor via ffmpeg |
-| Hotkeys / tray | yes | not yet (control with `save` / `quit` typed in the terminal) |
-| Window app (`--ui`), gallery, 9:16 export | yes | builds; untested |
+| Capture | Desktop Duplication (GPU, works with fullscreen games), WGC / ffmpeg fallbacks | X11 via ffmpeg `x11grab` (tested in WSL/Xvfb); Wayland not yet |
+| Encoder | Media Foundation hardware HEVC | ffmpeg: NVENC, VAAPI, or software x264 (each is probed before use) |
+| Audio | WASAPI loopback (+ mic) | PulseAudio/PipeWire monitor via ffmpeg (untested) |
+| Hotkeys / tray | yes | X11 global hotkeys (default `Ctrl+Shift+F9/F10/F11`); no tray yet |
+| Window app (`--ui`), gallery, trim / GIF / 9:16 | yes | builds; untested |
 
-The Linux build is checked for compilation in CI only. Reports from Linux users are welcome.
+CI builds and tests both platforms. Reports from Linux users are welcome.
