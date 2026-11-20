@@ -204,6 +204,16 @@ fn parse_args() -> Config {
                 i += 1;
                 continue;
             }
+            "--autostart" => {
+                // --autostart on | off | status
+                let ok = match val.as_str() {
+                    "on" => platform::set_autostart(true),
+                    "off" => platform::set_autostart(false),
+                    _ => true,
+                };
+                println!("autostart: {} ({})", if platform::autostart_enabled() { "on" } else { "off" }, if ok { "ok" } else { "failed" });
+                std::process::exit(if ok { 0 } else { 1 });
+            }
             "--out" => c.clips_dir = PathBuf::from(&val),
             "--save-after" => c.save_after = val.parse().ok(),
             other => eprintln!("unknown arg {other}"),

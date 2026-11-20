@@ -68,6 +68,36 @@ mod imp {
         }
     }
 
+    const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+    fn reg(args: &[&str]) -> std::process::Output {
+        Command::new("reg")
+            .args(args)
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap_or_else(|_| std::process::Output {
+                status: std::process::ExitStatus::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+    }
+
+    /// Is Bufo registered to start when the user logs in?
+    pub fn autostart_enabled() -> bool {
+        reg(&["query", RUN_KEY, "/v", "Bufo"]).status.success()
+    }
+
+    /// Add or remove the per-user "run at login" entry (no admin needed).
+    pub fn set_autostart(on: bool) -> bool {
+        if on {
+            let Ok(exe) = std::env::current_exe() else { return false };
+            let cmd = format!("\"{}\"", exe.display());
+            reg(&["add", RUN_KEY, "/v", "Bufo", "/t", "REG_SZ", "/d", &cmd, "/f"]).status.success()
+        } else {
+            !autostart_enabled() || reg(&["delete", RUN_KEY, "/v", "Bufo", "/f"]).status.success()
+        }
+    }
+
     /// Put a file on the clipboard (Ctrl+V pastes it into chats).
     pub fn copy_file_to_clipboard(path: &Path) -> bool {
         let p = std::fs::canonicalize(path)
@@ -141,6 +171,34 @@ mod imp {
             return sign * (h * 3600 + m * 60);
         }
         0
+    }
+
+    fn autostart_file() -> Option<std::path::PathBuf> {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+        Some(base.join("autostart").join("bufo.desktop"))
+    }
+
+    pub fn autostart_enabled() -> bool {
+        autostart_file().is_some_and(|p| p.exists())
+    }
+
+    /// Add or remove an XDG autostart entry.
+    pub fn set_autostart(on: bool) -> bool {
+        let Some(path) = autostart_file() else { return false };
+        if !on {
+            return fs::remove_file(&path).is_ok() || !path.exists();
+        }
+        let Ok(exe) = std::env::current_exe() else { return false };
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let body = format!(
+            "[Desktop Entry]\nType=Application\nName=Bufo\nComment=Instant-replay clip recorder\nExec=\"{}\"\nTerminal=false\n",
+            exe.display()
+        );
+        fs::write(path, body).is_ok()
     }
 
     /// Wayland: wl-copy, X11: xclip. Both need the `text/uri-list` type to paste as a file.

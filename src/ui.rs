@@ -153,6 +153,7 @@ pub struct App {
     last_check: Instant,
     reload: bool,
     tz: i64,
+    autostart: bool,
 }
 
 impl App {
@@ -176,6 +177,7 @@ impl App {
             last_check: Instant::now(),
             reload: false,
             tz: local_offset_secs(),
+            autostart: crate::platform::autostart_enabled(),
         };
         app.load();
         app
@@ -552,6 +554,16 @@ impl App {
                 row(ui, "Delete clips older than", |ui| {
                     ui.add(egui::DragValue::new(&mut f.keep_days).range(0..=3650).suffix(" days"));
                     ui.label(RichText::new("0 = never").color(MUTED).size(12.0));
+                });
+            });
+
+            card(ui, "Startup", |ui| {
+                row(ui, "Autostart", |ui| {
+                    if ui.checkbox(&mut self.autostart, "Start Bufo when I log in").changed()
+                        && !crate::platform::set_autostart(self.autostart)
+                    {
+                        self.autostart = crate::platform::autostart_enabled();
+                    }
                 });
             });
 
