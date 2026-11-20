@@ -86,6 +86,8 @@ struct Form {
     hotkey_save: String,
     hotkey_quit: String,
     hotkey_shot: String,
+    hotkey_long: String,
+    clip_long_secs: u64,
 }
 
 impl Form {
@@ -105,6 +107,8 @@ impl Form {
             hotkey_save: c.hotkey_save.clone(),
             hotkey_quit: c.hotkey_quit.clone(),
             hotkey_shot: c.hotkey_shot.clone(),
+            hotkey_long: c.hotkey_long.clone(),
+            clip_long_secs: c.clip_long_secs,
         }
     }
 
@@ -125,6 +129,8 @@ impl Form {
             hotkey_save: crate::platform::DEFAULT_HOTKEY_SAVE.into(),
             hotkey_quit: crate::platform::DEFAULT_HOTKEY_QUIT.into(),
             hotkey_shot: crate::platform::DEFAULT_HOTKEY_SHOT.into(),
+            hotkey_long: crate::platform::DEFAULT_HOTKEY_LONG.into(),
+            clip_long_secs: 300,
         }
     }
 
@@ -144,6 +150,8 @@ impl Form {
             hotkey_save: Some(self.hotkey_save.clone()),
             hotkey_quit: Some(self.hotkey_quit.clone()),
             hotkey_shot: Some(self.hotkey_shot.clone()),
+            hotkey_long: Some(self.hotkey_long.clone()),
+            clip_long_secs: Some(self.clip_long_secs),
         }
     }
 
@@ -155,13 +163,14 @@ impl Form {
         settings::parse_hotkey(&self.hotkey_save).is_some()
             && settings::parse_hotkey(&self.hotkey_quit).is_some()
             && settings::parse_hotkey(&self.hotkey_shot).is_some()
+            && settings::parse_hotkey(&self.hotkey_long).is_some()
             && self.hotkeys_distinct()
     }
 
     fn hotkeys_distinct(&self) -> bool {
         let l = |s: &str| s.trim().to_lowercase();
-        let (a, b, c) = (l(&self.hotkey_save), l(&self.hotkey_quit), l(&self.hotkey_shot));
-        a != b && a != c && b != c
+        let k = [&self.hotkey_save, &self.hotkey_quit, &self.hotkey_shot, &self.hotkey_long].map(|s| l(s));
+        (0..4).all(|i| (i + 1..4).all(|j| k[i] != k[j]))
     }
 }
 
@@ -722,6 +731,10 @@ impl App {
                     }
                     ui.add(egui::DragValue::new(&mut f.clip_secs).range(5..=600).suffix(" s"));
                 });
+                row(ui, "Long clip length", |ui| {
+                    ui.add(egui::DragValue::new(&mut f.clip_long_secs).range(30..=7200).suffix(" s"));
+                    ui.label(RichText::new("saved by the long-clip hotkey").color(MUTED).size(12.0));
+                });
                 row(ui, "Segment length", |ui| {
                     ui.add(egui::DragValue::new(&mut f.segment_secs).range(2..=30).suffix(" s"));
                     ui.label(RichText::new("longer = fewer encoder restarts").color(MUTED).size(12.0));
@@ -777,6 +790,7 @@ impl App {
             card(ui, "Hotkeys", |ui| {
                 for (label, text) in [
                     ("Save clip", &mut f.hotkey_save),
+                    ("Save long clip", &mut f.hotkey_long),
                     ("Screenshot", &mut f.hotkey_shot),
                     ("Quit recorder", &mut f.hotkey_quit),
                 ] {

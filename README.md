@@ -6,7 +6,7 @@ Records the screen into a disk ring buffer with the hardware encoder, so RAM sta
 ## Features
 - Desktop Duplication capture (works with borderless-fullscreen games) + Media Foundation hardware HEVC, AAC audio (system + optional mic)
 - Disk ring buffer (default 15 min); saving is a stream-copy concat (instant)
-- Hotkeys for save / screenshot / quit, tray icon, desktop notification and sound on save
+- Hotkeys for save / long clip (default last 5 min) / screenshot / quit, tray icon, desktop notification and sound on save
 - Saved clip is copied to the clipboard as a file (paste straight into chats)
 - Window app (`--ui`): clip grid, search, game filter, rename/tags, favorites, delete, settings
 - Built-in trim editor with a film strip, GIF export, 9:16 export (blur or crop)

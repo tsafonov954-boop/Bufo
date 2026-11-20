@@ -37,6 +37,10 @@ pub struct FileConfig {
     pub hotkey_quit: Option<String>,
     /// Hotkey that takes a screenshot.
     pub hotkey_shot: Option<String>,
+    /// Hotkey that saves a longer clip (`clip_long_secs`).
+    pub hotkey_long: Option<String>,
+    /// Length of the long clip in seconds.
+    pub clip_long_secs: Option<u64>,
 }
 
 /// Parse "Ctrl+Alt+F10" into (modifier flags, virtual-key code).
@@ -117,10 +121,11 @@ keep_days = 0         # auto-delete clips older than N days (0 = never)
 /// Hotkey lines depend on the OS (see `platform::DEFAULT_HOTKEY_SAVE`).
 fn template() -> String {
     format!(
-        "{TEMPLATE}hotkey_save = \"{}\"   # Alt+F10 is taken by NVIDIA's overlay on Windows\nhotkey_quit = \"{}\"\nhotkey_shot = \"{}\"\n",
+        "{TEMPLATE}hotkey_save = \"{}\"   # Alt+F10 is taken by NVIDIA's overlay on Windows\nhotkey_quit = \"{}\"\nhotkey_shot = \"{}\"\nhotkey_long = \"{}\"   # saves the last clip_long_secs seconds\nclip_long_secs = 300\n",
         crate::platform::DEFAULT_HOTKEY_SAVE,
         crate::platform::DEFAULT_HOTKEY_QUIT,
-        crate::platform::DEFAULT_HOTKEY_SHOT
+        crate::platform::DEFAULT_HOTKEY_SHOT,
+        crate::platform::DEFAULT_HOTKEY_LONG
     )
 }
 

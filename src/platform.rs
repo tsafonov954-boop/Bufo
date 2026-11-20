@@ -288,6 +288,10 @@ pub const DEFAULT_HOTKEY_SAVE: &str = "Ctrl+Alt+F10";
 #[cfg(windows)]
 pub const DEFAULT_HOTKEY_QUIT: &str = "Ctrl+Alt+F11";
 #[cfg(windows)]
+pub const DEFAULT_HOTKEY_LONG: &str = "Ctrl+Alt+F8";
+#[cfg(not(windows))]
+pub const DEFAULT_HOTKEY_LONG: &str = "Ctrl+Shift+F8";
+#[cfg(windows)]
 pub const DEFAULT_HOTKEY_SHOT: &str = "Ctrl+Alt+F9";
 #[cfg(not(windows))]
 pub const DEFAULT_HOTKEY_SHOT: &str = "Ctrl+Shift+F9";

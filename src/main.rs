@@ -86,6 +86,8 @@ struct Config {
     hotkey_save: String,
     hotkey_quit: String,
     hotkey_shot: String,
+    hotkey_long: String,
+    clip_long_secs: u64,
     /// Test/maintenance mode: only run the clip cleanup, then exit.
     cleanup_only: bool,
     /// Build the gallery page and exit (`--gallery` also opens it).
@@ -136,6 +138,8 @@ fn parse_args() -> Config {
         hotkey_save: platform::DEFAULT_HOTKEY_SAVE.to_string(),
         hotkey_quit: platform::DEFAULT_HOTKEY_QUIT.to_string(),
         hotkey_shot: platform::DEFAULT_HOTKEY_SHOT.to_string(),
+        hotkey_long: platform::DEFAULT_HOTKEY_LONG.to_string(),
+        clip_long_secs: 300,
         cleanup_only: false,
         gallery: false,
         gallery_open: false,
@@ -166,6 +170,8 @@ fn parse_args() -> Config {
     c.hotkey_save = f.hotkey_save.unwrap_or(c.hotkey_save);
     c.hotkey_quit = f.hotkey_quit.unwrap_or(c.hotkey_quit);
     c.hotkey_shot = f.hotkey_shot.unwrap_or(c.hotkey_shot);
+    c.hotkey_long = f.hotkey_long.unwrap_or(c.hotkey_long);
+    c.clip_long_secs = f.clip_long_secs.unwrap_or(c.clip_long_secs);
     if let Some(s) = f.segment_secs {
         SEG.store(s, std::sync::atomic::Ordering::Relaxed);
     }
@@ -441,7 +447,7 @@ fn prune_loop(dir: PathBuf, buffer_secs: u64) {
 
 /// Concatenate the newest segments into an mp4. Returns the file and its
 /// approximate length in seconds.
-fn save_clip(c: &Config) -> Option<(PathBuf, u64)> {
+fn save_clip(c: &Config, secs: u64) -> Option<(PathBuf, u64)> {
     let mut segs = segments(&c.buffer_dir);
     // ffmpeg's newest .ts is still being written; wgc only publishes finished .mp4.
     if segs.last().is_some_and(|p| p.extension().is_some_and(|x| x == "ts")) {
@@ -452,7 +458,7 @@ fn save_clip(c: &Config) -> Option<(PathBuf, u64)> {
         return None;
     }
     // Round up so the clip is never shorter than requested.
-    let want = c.clip_secs.div_ceil(seg_secs()).max(1) as usize;
+    let want = secs.div_ceil(seg_secs()).max(1) as usize;
     let start = segs.len().saturating_sub(want);
     let chosen = &segs[start..];
 
@@ -682,8 +688,8 @@ fn take_screenshot(cfg: &Config) {
 }
 
 /// Save a clip and give an audible confirmation.
-fn save_with_feedback(cfg: &Config) {
-    match save_clip(cfg) {
+fn save_with_feedback(cfg: &Config, secs: u64) {
+    match save_clip(cfg, secs) {
         Some((path, duration)) => {
             settings::log(&format!("saved {}", path.display()));
             gallery::register(cfg, &path, &winfo::last_app(), duration);
@@ -737,19 +743,21 @@ fn run_interactive(cfg: &Arc<Config>) {
     #[derive(Clone, Copy)]
     enum Cmd {
         Save,
+        Long,
         Shot,
         Quit,
     }
     // global-hotkey wants "super", not "win".
     let parse = |text: &str| HotKey::from_str(&text.to_ascii_lowercase().replace("win", "super")).ok();
-    let (save_hk, quit_hk, shot_hk) = (parse(&cfg.hotkey_save), parse(&cfg.hotkey_quit), parse(&cfg.hotkey_shot));
+    let (save_hk, quit_hk, shot_hk, long_hk) =
+        (parse(&cfg.hotkey_save), parse(&cfg.hotkey_quit), parse(&cfg.hotkey_shot), parse(&cfg.hotkey_long));
 
     // Keep the manager alive for as long as we listen.
     let manager = GlobalHotKeyManager::new()
         .map_err(|e| eprintln!("global hotkeys unavailable: {e} (X11 only; use the terminal)"))
         .ok();
     if let Some(m) = &manager {
-        for (name, hk) in [("save", save_hk), ("quit", quit_hk), ("screenshot", shot_hk)] {
+        for (name, hk) in [("save", save_hk), ("quit", quit_hk), ("screenshot", shot_hk), ("long clip", long_hk)] {
             match hk {
                 Some(hk) => {
                     if let Err(e) = m.register(hk) {
@@ -764,7 +772,8 @@ fn run_interactive(cfg: &Arc<Config>) {
     let (tx, rx) = mpsc::channel::<Cmd>();
     {
         let tx = tx.clone();
-        let (sid, qid, pid) = (save_hk.map(|h| h.id()), quit_hk.map(|h| h.id()), shot_hk.map(|h| h.id()));
+        let (sid, qid, pid, lid) =
+            (save_hk.map(|h| h.id()), quit_hk.map(|h| h.id()), shot_hk.map(|h| h.id()), long_hk.map(|h| h.id()));
         thread::spawn(move || {
             for ev in GlobalHotKeyEvent::receiver() {
                 if ev.state != HotKeyState::Pressed {
@@ -774,6 +783,8 @@ fn run_interactive(cfg: &Arc<Config>) {
                     Cmd::Save
                 } else if Some(ev.id) == qid {
                     Cmd::Quit
+                } else if Some(ev.id) == lid {
+                    Cmd::Long
                 } else if Some(ev.id) == pid {
                     Cmd::Shot
                 } else {
@@ -790,6 +801,7 @@ fn run_interactive(cfg: &Arc<Config>) {
         for line in std::io::stdin().lock().lines().map_while(Result::ok) {
             let cmd = match line.trim() {
                 "save" | "s" => Cmd::Save,
+                "long" | "l" => Cmd::Long,
                 "shot" | "screenshot" => Cmd::Shot,
                 "quit" | "q" => Cmd::Quit,
                 _ => continue,
@@ -802,7 +814,8 @@ fn run_interactive(cfg: &Arc<Config>) {
     println!("type 'save' to save a clip, 'quit' to exit");
     for cmd in rx {
         match cmd {
-            Cmd::Save => save_with_feedback(cfg),
+            Cmd::Save => save_with_feedback(cfg, cfg.clip_secs),
+            Cmd::Long => save_with_feedback(cfg, cfg.clip_long_secs),
             Cmd::Shot => take_screenshot(cfg),
             Cmd::Quit => break,
         }
@@ -893,7 +906,7 @@ fn main() {
 
     if let Some(secs) = cfg.save_after {
         thread::sleep(Duration::from_secs(secs));
-        save_with_feedback(&cfg);
+        save_with_feedback(&cfg, cfg.clip_secs);
         thread::sleep(Duration::from_secs(3)); // let the clipboard copy finish
         stop();
         return;
@@ -954,7 +967,7 @@ fn run_interactive(cfg: &Arc<Config>) {
                         let _ = Command::new(exe).arg("--ui").spawn();
                     }
                 } else if ev.id == save_id {
-                    save_with_feedback(&cfg);
+                    save_with_feedback(&cfg, cfg.clip_secs);
                 } else if ev.id == shot_id {
                     take_screenshot(&cfg);
                 } else if ev.id == gallery_id {
@@ -986,7 +999,7 @@ fn run_interactive(cfg: &Arc<Config>) {
     unsafe {
         // A failed registration means another app already owns the combination
         // (e.g. NVIDIA's overlay owns Alt+F10); say so instead of failing silently.
-        for (id, text) in [(1, &cfg.hotkey_save), (2, &cfg.hotkey_quit), (3, &cfg.hotkey_shot)] {
+        for (id, text) in [(1, &cfg.hotkey_save), (2, &cfg.hotkey_quit), (3, &cfg.hotkey_shot), (4, &cfg.hotkey_long)] {
             match settings::parse_hotkey(text) {
                 Some((mods, vk)) => {
                     if RegisterHotKey(std::ptr::null_mut(), id, mods | MOD_NOREPEAT, vk) == 0 {
@@ -1005,7 +1018,11 @@ fn run_interactive(cfg: &Arc<Config>) {
                 match msg.wParam {
                     1 => {
                         let cfg = Arc::clone(&cfg);
-                        thread::spawn(move || save_with_feedback(&cfg));
+                        thread::spawn(move || save_with_feedback(&cfg, cfg.clip_secs));
+                    }
+                    4 => {
+                        let cfg = Arc::clone(&cfg);
+                        thread::spawn(move || save_with_feedback(&cfg, cfg.clip_long_secs));
                     }
                     2 => break,
                     3 => {
