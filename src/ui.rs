@@ -81,6 +81,7 @@ struct Form {
     keep_days: u64,
     hotkey_save: String,
     hotkey_quit: String,
+    hotkey_shot: String,
 }
 
 impl Form {
@@ -99,6 +100,7 @@ impl Form {
             keep_days: c.keep_days,
             hotkey_save: c.hotkey_save.clone(),
             hotkey_quit: c.hotkey_quit.clone(),
+            hotkey_shot: c.hotkey_shot.clone(),
         }
     }
 
@@ -118,6 +120,7 @@ impl Form {
             keep_days: 0,
             hotkey_save: crate::platform::DEFAULT_HOTKEY_SAVE.into(),
             hotkey_quit: crate::platform::DEFAULT_HOTKEY_QUIT.into(),
+            hotkey_shot: crate::platform::DEFAULT_HOTKEY_SHOT.into(),
         }
     }
 
@@ -136,6 +139,7 @@ impl Form {
             keep_days: Some(self.keep_days),
             hotkey_save: Some(self.hotkey_save.clone()),
             hotkey_quit: Some(self.hotkey_quit.clone()),
+            hotkey_shot: Some(self.hotkey_shot.clone()),
         }
     }
 
@@ -146,7 +150,14 @@ impl Form {
     fn hotkeys_valid(&self) -> bool {
         settings::parse_hotkey(&self.hotkey_save).is_some()
             && settings::parse_hotkey(&self.hotkey_quit).is_some()
-            && self.hotkey_save.trim().to_lowercase() != self.hotkey_quit.trim().to_lowercase()
+            && settings::parse_hotkey(&self.hotkey_shot).is_some()
+            && self.hotkeys_distinct()
+    }
+
+    fn hotkeys_distinct(&self) -> bool {
+        let l = |s: &str| s.trim().to_lowercase();
+        let (a, b, c) = (l(&self.hotkey_save), l(&self.hotkey_quit), l(&self.hotkey_shot));
+        a != b && a != c && b != c
     }
 }
 
@@ -717,7 +728,11 @@ impl App {
             });
 
             card(ui, "Hotkeys", |ui| {
-                for (label, text) in [("Save clip", &mut f.hotkey_save), ("Quit recorder", &mut f.hotkey_quit)] {
+                for (label, text) in [
+                    ("Save clip", &mut f.hotkey_save),
+                    ("Screenshot", &mut f.hotkey_shot),
+                    ("Quit recorder", &mut f.hotkey_quit),
+                ] {
                     row(ui, label, |ui| {
                         let ok = settings::parse_hotkey(text).is_some();
                         let mut e = egui::TextEdit::singleline(text).desired_width(200.0);
@@ -735,8 +750,8 @@ impl App {
                         .color(MUTED)
                         .size(12.0),
                 );
-                if f.hotkey_save.trim().eq_ignore_ascii_case(f.hotkey_quit.trim()) {
-                    ui.label(RichText::new("The two hotkeys must differ.").color(ACCENT));
+                if !f.hotkeys_distinct() {
+                    ui.label(RichText::new("The hotkeys must all differ.").color(ACCENT));
                 }
             });
 

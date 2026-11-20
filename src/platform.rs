@@ -287,6 +287,10 @@ pub use imp::*;
 pub const DEFAULT_HOTKEY_SAVE: &str = "Ctrl+Alt+F10";
 #[cfg(windows)]
 pub const DEFAULT_HOTKEY_QUIT: &str = "Ctrl+Alt+F11";
+#[cfg(windows)]
+pub const DEFAULT_HOTKEY_SHOT: &str = "Ctrl+Alt+F9";
+#[cfg(not(windows))]
+pub const DEFAULT_HOTKEY_SHOT: &str = "Ctrl+Shift+F9";
 #[cfg(not(windows))]
 pub const DEFAULT_HOTKEY_SAVE: &str = "Ctrl+Shift+F10";
 #[cfg(not(windows))]
