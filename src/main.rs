@@ -394,7 +394,7 @@ struct Enc {
 fn encoder_candidates(c: &Config) -> Vec<Enc> {
     let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     let br = format!("{}", c.bitrate);
-    let mut nv = s(&["-c:v", "hevc_nvenc", "-preset", "p1", "-rc", "vbr", "-cq"]);
+    let mut nv = s(&["-c:v", "hevc_nvenc", "-preset", "p1", "-tune", "ull", "-delay", "0", "-surfaces", "4", "-rc", "vbr", "-cq"]);
     nv.extend(s(&[&c.cq.to_string(), "-b:v", "0", "-maxrate", "16M", "-bufsize", "32M", "-forced-idr", "1"]));
     let mut amf = s(&["-c:v", "hevc_amf", "-usage", "lowlatency", "-quality", "speed", "-rc", "vbr_latency", "-b:v"]);
     amf.extend(s(&[&br, "-maxrate", "16M"]));
@@ -426,7 +426,18 @@ fn chosen_encoder_opt(c: &Config) -> Option<Enc> {
     static CHOSEN: std::sync::OnceLock<Option<Enc>> = std::sync::OnceLock::new();
     CHOSEN
         .get_or_init(|| {
-            let found = encoder_candidates(c).into_iter().find(encoder_works);
+            // A probe can fail once while the GPU is busy or a previous capture is
+            // still shutting down, so try a few times before giving up.
+            let mut found = None;
+            for round in 0..3 {
+                found = encoder_candidates(c).into_iter().find(encoder_works);
+                if found.is_some() {
+                    break;
+                }
+                if round < 2 {
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
             match &found {
                 Some(e) => settings::log(&format!("encoder: {}", e.name)),
                 None => settings::log("encoder: no hardware encoder found through ffmpeg"),
