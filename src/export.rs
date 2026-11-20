@@ -105,7 +105,7 @@ pub fn trim(input: &Path, from: f64, to: f64) -> Option<PathBuf> {
     let ok = run_with_fallback(|enc| {
         let mut cmd = Command::new(ffmpeg_bin());
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(input);
-        cmd.args(["-ss", &format!("{from:.3}"), "-to", &format!("{to:.3}")]);
+        cmd.args(["-ss", &format!("{from:.3}"), "-to", &format!("{to:.3}"), "-map", "0:v", "-map", "0:a?"]);
         cmd.args(enc).args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]);
         cmd.arg(&out);
         cmd

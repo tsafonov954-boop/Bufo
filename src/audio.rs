@@ -10,6 +10,7 @@
 use std::{
     collections::VecDeque,
     error::Error,
+    path::PathBuf,
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
     thread,
     time::{Duration, Instant},
@@ -50,14 +51,16 @@ fn open_source(
 }
 
 /// Start the capture thread. Returns None (and logs why) if audio is unavailable.
-pub fn start(mic: bool) -> Option<Receiver<Vec<u8>>> {
+/// With `mic_dir` set, the microphone is not mixed in but written there as a
+/// separate track (see `mictrack`).
+pub fn start(mic: bool, mic_dir: Option<PathBuf>) -> Option<Receiver<Vec<u8>>> {
     // ~5 s of buffering at most: if nobody drains (static screen), old audio is dropped.
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(512);
     let (ready_tx, ready_rx) = mpsc::channel::<Result<String, String>>();
     thread::Builder::new()
         .name("audio".into())
         .spawn(move || {
-            if let Err(e) = run(tx, &ready_tx, mic) {
+            if let Err(e) = run(tx, &ready_tx, mic, mic_dir) {
                 let _ = ready_tx.send(Err(e.to_string()));
             }
         })
@@ -89,16 +92,23 @@ fn run(
     tx: SyncSender<Vec<u8>>,
     ready: &mpsc::Sender<Result<String, String>>,
     mic: bool,
+    mic_dir: Option<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
     let _ = initialize_mta();
     let enumerator = DeviceEnumerator::new()?;
     let mut sources = vec![open_source(&enumerator, Direction::Render)?];
     let mut desc = String::from("system loopback");
+    let mut mic_src: Option<Source> = None;
     if mic {
         match open_source(&enumerator, Direction::Capture) {
             Ok(s) => {
-                sources.push(s);
-                desc.push_str(" + microphone");
+                if mic_dir.is_some() {
+                    mic_src = Some(s);
+                    desc.push_str(" + microphone (separate track)");
+                } else {
+                    sources.push(s);
+                    desc.push_str(" + microphone");
+                }
             }
             Err(e) => eprintln!("microphone unavailable ({e}), system audio only"),
         }
@@ -106,10 +116,12 @@ fn run(
     let _ = ready.send(Ok(desc));
 
     let started = Instant::now();
+    let started_ms = crate::mictrack::unix_ms();
+    let mut writer = mic_dir.map(|d| crate::mictrack::Writer::new(d, crate::seg_secs()));
     let mut sent_frames: u64 = 0;
     loop {
         thread::sleep(Duration::from_millis(10));
-        for s in sources.iter_mut() {
+        for s in sources.iter_mut().chain(mic_src.iter_mut()) {
             s.capture.read_from_device_to_deque(&mut s.queue)?;
             if s.queue.len() > MAX_BACKLOG {
                 let drop = (s.queue.len() - MAX_BACKLOG) / BLOCK * BLOCK;
@@ -129,6 +141,14 @@ fn run(
                 let hi = s.queue.pop_front().unwrap_or(0);
                 *sample = sample.saturating_add(i16::from_le_bytes([lo, hi]));
             }
+        }
+        if let (Some(m), Some(w)) = (mic_src.as_mut(), writer.as_mut()) {
+            let mut pcm = vec![0u8; n * BLOCK];
+            let take = n.min(m.queue.len() / BLOCK) * BLOCK;
+            for b in pcm.iter_mut().take(take) {
+                *b = m.queue.pop_front().unwrap_or(0);
+            }
+            w.write(started_ms + sent_frames * 1000 / RATE as u64, &pcm);
         }
         let bytes: Vec<u8> = mix.iter().flat_map(|v| v.to_le_bytes()).collect();
         sent_frames += n as u64;

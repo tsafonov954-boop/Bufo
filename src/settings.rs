@@ -25,6 +25,8 @@ pub struct FileConfig {
     pub audio: Option<bool>,
     /// Mix the default microphone into the audio track.
     pub mic: Option<bool>,
+    /// Record the microphone as a separate audio track.
+    pub mic_track: Option<bool>,
     /// Copy each saved clip to the clipboard as a file.
     pub clipboard: Option<bool>,
     /// Delete the oldest clips once the folder exceeds this many GB (0 = off).
@@ -112,7 +114,8 @@ fps = 60
 bitrate = 6000000     # video bits per second
 segment_secs = 8      # buffer segment length (longer = fewer encoder restarts)
 audio = true          # system audio
-mic = false           # mix the microphone into the audio track
+mic = false           # record the microphone
+mic_track = true      # ...as its own audio track (false = mix into the game sound)
 clipboard = true      # copy the saved clip to the clipboard (paste into chats)
 max_clips_gb = 0      # auto-delete oldest clips above this size (0 = never)
 keep_days = 0         # auto-delete clips older than N days (0 = never)

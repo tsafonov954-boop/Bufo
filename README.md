@@ -4,7 +4,7 @@ Lightweight instant-replay clip recorder, written in Rust (a Medal.tv alternativ
 Records the screen into a disk ring buffer with the hardware encoder, so RAM stays low; one hotkey saves the last N seconds instantly.
 
 ## Features
-- Desktop Duplication capture (works with borderless-fullscreen games) + Media Foundation hardware HEVC, AAC audio (system + optional mic)
+- Desktop Duplication capture (works with borderless-fullscreen games) + Media Foundation hardware HEVC, AAC audio (system, plus the microphone as its own separate track)
 - Disk ring buffer (default 15 min); saving is a stream-copy concat (instant)
 - Hotkeys for save / long clip (default last 5 min) / screenshot / quit, tray icon, desktop notification and sound on save
 - Saved clip is copied to the clipboard as a file (paste straight into chats)

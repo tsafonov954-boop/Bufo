@@ -80,6 +80,7 @@ struct Form {
     segment_secs: u64,
     audio: bool,
     mic: bool,
+    mic_track: bool,
     clipboard: bool,
     max_clips_gb: f64,
     keep_days: u64,
@@ -101,6 +102,7 @@ impl Form {
             segment_secs: crate::seg_secs(),
             audio: c.audio,
             mic: c.mic,
+            mic_track: c.mic_track,
             clipboard: c.clipboard,
             max_clips_gb: c.max_clips_gb,
             keep_days: c.keep_days,
@@ -123,6 +125,7 @@ impl Form {
             segment_secs: 8,
             audio: true,
             mic: false,
+            mic_track: true,
             clipboard: true,
             max_clips_gb: 0.0,
             keep_days: 0,
@@ -144,6 +147,7 @@ impl Form {
             segment_secs: Some(self.segment_secs),
             audio: Some(self.audio),
             mic: Some(self.mic),
+            mic_track: Some(self.mic_track),
             clipboard: Some(self.clipboard),
             max_clips_gb: Some(self.max_clips_gb),
             keep_days: Some(self.keep_days),
@@ -756,7 +760,8 @@ impl App {
                     ui.checkbox(&mut f.audio, "Record game / desktop sound");
                 });
                 row(ui, "Microphone", |ui| {
-                    ui.add_enabled(f.audio, egui::Checkbox::new(&mut f.mic, "Mix the default microphone in"));
+                    ui.add_enabled(f.audio, egui::Checkbox::new(&mut f.mic, "Record the default microphone"));
+                    ui.add_enabled(f.audio && f.mic, egui::Checkbox::new(&mut f.mic_track, "...as a separate audio track"));
                 });
             });
 

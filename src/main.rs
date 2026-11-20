@@ -21,6 +21,7 @@ use std::{
 
 #[cfg(windows)]
 mod audio;
+mod mictrack;
 #[cfg(windows)]
 mod dda;
 mod export;
@@ -77,6 +78,8 @@ struct Config {
     audio: bool,
     /// Mix the default microphone into the audio track (opt-in, `--mic`).
     mic: bool,
+    /// Write the microphone as its own audio track instead of mixing it in.
+    mic_track: bool,
     /// Put the saved clip file on the clipboard (paste into Discord, Telegram...).
     clipboard: bool,
     /// Clip folder size limit in GB, 0 = unlimited.
@@ -132,6 +135,7 @@ fn parse_args() -> Config {
         bitrate: 6_000_000,
         audio: true,
         mic: false,
+        mic_track: true,
         clipboard: true,
         max_clips_gb: 0.0,
         keep_days: 0,
@@ -164,6 +168,7 @@ fn parse_args() -> Config {
     c.bitrate = f.bitrate.unwrap_or(c.bitrate);
     c.audio = f.audio.unwrap_or(c.audio);
     c.mic = f.mic.unwrap_or(c.mic);
+    c.mic_track = f.mic_track.unwrap_or(c.mic_track);
     c.clipboard = f.clipboard.unwrap_or(c.clipboard);
     c.max_clips_gb = f.max_clips_gb.unwrap_or(c.max_clips_gb);
     c.keep_days = f.keep_days.unwrap_or(c.keep_days);
@@ -436,6 +441,7 @@ fn prune_loop(dir: PathBuf, buffer_secs: u64) {
     let keep = (buffer_secs / seg_secs() + 2) as usize;
     loop {
         thread::sleep(Duration::from_secs(seg_secs()));
+        mictrack::prune(&dir, mictrack::unix_ms().saturating_sub((buffer_secs + 3 * seg_secs()) * 1000));
         let segs = segments(&dir);
         if segs.len() > keep {
             for old in &segs[..segs.len() - keep] {
@@ -482,6 +488,19 @@ fn save_clip(c: &Config, secs: u64) -> Option<(PathBuf, u64)> {
         .map_err(|e| settings::log(&format!("cannot run ffmpeg: {e}")))
         .ok()?;
     if status.success() {
+        if c.audio && c.mic && c.mic_track {
+            let end_ms = chosen
+                .last()
+                .and_then(|p| fs::metadata(p).ok()?.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64);
+            let dur = export::duration(&out);
+            if let (Some(end_ms), Some(dur)) = (end_ms, dur) {
+                if !mictrack::add_track(&ffmpeg_bin(), &c.buffer_dir, &out, end_ms, dur) {
+                    settings::log("microphone track could not be added");
+                }
+            }
+        }
         println!("saved {} ({} segments)", out.display(), chosen.len());
         Some((out, chosen.len() as u64 * seg_secs()))
     } else {
@@ -533,7 +552,7 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
     clean_buffer(&c.buffer_dir);
     // WGC only delivers frames when the picture changes, so a static desktop
     // legitimately produces nothing; a successful start is enough.
-    let audio_rx = if c.audio { audio::start(c.mic) } else { None };
+    let audio_rx = if c.audio { audio::start(c.mic, c.mic_track.then(|| c.buffer_dir.clone())) } else { None };
     if audio_rx.is_none() {
         println!("audio: off");
     }
@@ -546,7 +565,7 @@ fn start_wgc(c: &Config) -> Result<Rec, String> {
 fn start_dda(c: &Config) -> Result<Rec, String> {
     fs::create_dir_all(&c.buffer_dir).map_err(|e| e.to_string())?;
     clean_buffer(&c.buffer_dir);
-    let audio_rx = if c.audio { audio::start(c.mic) } else { None };
+    let audio_rx = if c.audio { audio::start(c.mic, c.mic_track.then(|| c.buffer_dir.clone())) } else { None };
     if audio_rx.is_none() {
         println!("audio: off");
     }
