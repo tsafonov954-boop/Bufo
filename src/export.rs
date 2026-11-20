@@ -65,6 +65,26 @@ pub fn duration(input: &Path) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + s)
 }
 
+/// Write `n` evenly spaced small JPEG frames of a clip to `dir/<prefix>_<k>.jpg`
+/// (for the trim editor's film strip). Existing frames are kept.
+pub fn filmstrip(input: &Path, dur: f64, n: usize, dir: &Path, prefix: &str) {
+    let _ = fs::create_dir_all(dir);
+    for k in 0..n {
+        let out = dir.join(format!("{prefix}_{k}.jpg"));
+        if out.exists() {
+            continue;
+        }
+        // Stay a little inside the clip: the last video frame is often earlier than the container length.
+        let t = (dur * (k as f64 + 0.5) / n as f64).min((dur - 0.5).max(0.0));
+        let mut cmd = Command::new(ffmpeg_bin());
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{t:.2}"), "-i"]).arg(input);
+        cmd.args(["-frames:v", "1", "-vf", "scale=200:-2,format=yuvj420p", "-q:v", "6"]).arg(&out);
+        cmd.stdin(Stdio::null());
+        crate::platform::no_window(&mut cmd);
+        let _ = cmd.status();
+    }
+}
+
 /// Run ffmpeg with the video encoder `enc` (GPU first, software as fallback).
 fn run_with_fallback(build: impl Fn(&[&str]) -> Command) -> bool {
     let attempts: [&[&str]; 2] = [

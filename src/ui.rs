@@ -57,7 +57,11 @@ struct Trim {
     dur: f64,
     from: f64,
     to: f64,
+    strip_dir: PathBuf,
+    prefix: String,
 }
+
+const STRIP_FRAMES: usize = 8;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -208,6 +212,10 @@ impl App {
             only_fav: false,
         };
         app.load();
+        // Test hook: open the trim panel for the newest clip right away.
+        if std::env::var_os("CLIPREC_TRIM").is_some() && !app.clips.is_empty() {
+            app.do_action(Action::Trim(0));
+        }
         app
     }
 
@@ -282,7 +290,15 @@ impl App {
             Action::Trim(i) => {
                 let c = &self.clips[i];
                 let dur = export::duration(&c.path).unwrap_or(c.meta.duration as f64).max(1.0);
-                self.trim = Some(Trim { path: c.path.clone(), title: c.meta.title.clone(), dur, from: 0.0, to: dur });
+                let stem = c.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let prefix = format!("strip_{stem}");
+                let dir = self.cfg.clips_dir.join(".thumbs");
+                let path = c.path.clone();
+                {
+                    let (path, dir, prefix) = (path.clone(), dir.clone(), prefix.clone());
+                    std::thread::spawn(move || export::filmstrip(&path, dur, STRIP_FRAMES, &dir, &prefix));
+                }
+                self.trim = Some(Trim { path, title: c.meta.title.clone(), dur, from: 0.0, to: dur, strip_dir: dir, prefix });
             }
             Action::Gif(i) => {
                 let path = self.clips[i].path.clone();
@@ -380,6 +396,37 @@ impl App {
                 });
                 ui.add_space(6.0);
                 let dur = t.dur;
+                // Film strip with the unselected parts dimmed.
+                let strip_w = ui.available_width();
+                let cell = strip_w / STRIP_FRAMES as f32;
+                let strip_h = (cell * 9.0 / 16.0).floor();
+                let (strip, _) = ui.allocate_exact_size(egui::vec2(strip_w, strip_h), egui::Sense::hover());
+                ui.painter().rect_filled(strip, 6, Color32::BLACK);
+                let mut loading = false;
+                for k in 0..STRIP_FRAMES {
+                    let f = t.strip_dir.join(format!("{}_{k}.jpg", t.prefix));
+                    let r = egui::Rect::from_min_size(
+                        strip.min + egui::vec2(cell * k as f32, 0.0),
+                        egui::vec2(cell, strip_h),
+                    );
+                    if f.exists() {
+                        let uri = format!("file:///{}", f.display().to_string().replace('\\', "/"));
+                        egui::Image::new(uri).fit_to_exact_size(r.size()).paint_at(ui, r);
+                    } else {
+                        loading = true;
+                    }
+                }
+                let x = |s: f64| strip.min.x + strip_w * (s / dur) as f32;
+                let dim = Color32::from_black_alpha(165);
+                ui.painter().rect_filled(egui::Rect::from_min_max(strip.min, egui::pos2(x(t.from), strip.max.y)), 0, dim);
+                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(x(t.to), strip.min.y), strip.max), 0, dim);
+                let edge = egui::Stroke::new(2.0, ACCENT);
+                ui.painter().vline(x(t.from), strip.y_range(), edge);
+                ui.painter().vline(x(t.to), strip.y_range(), edge);
+                if loading {
+                    ui.ctx().request_repaint_after(Duration::from_millis(400));
+                }
+                ui.add_space(6.0);
                 let (mut from, mut to) = (t.from, t.to);
                 egui::Grid::new("trim_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                     ui.label(RichText::new("Start").color(MUTED));
@@ -758,7 +805,7 @@ impl App {
             card(ui, "About", |ui| {
                 ui.label("Bufo \u{b7} GPLv3 \u{b7} open source");
                 ui.label(
-                    RichText::new("Windows Graphics Capture + hardware encoder, disk ring buffer.")
+                    RichText::new("Desktop Duplication + hardware HEVC encoder, rolling disk buffer.")
                         .color(MUTED)
                         .size(12.0),
                 );
