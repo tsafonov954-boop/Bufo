@@ -209,6 +209,11 @@ fn parse_args() -> Config {
                 i += 1;
                 continue;
             }
+            "--restart" => {
+                // Restart the background recorder (applies changed settings).
+                println!("restart: {}", if platform::restart_recorder() { "ok" } else { "failed" });
+                std::process::exit(0);
+            }
             "--autostart" => {
                 // --autostart on | off | status
                 let ok = match val.as_str() {

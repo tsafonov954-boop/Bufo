@@ -24,6 +24,24 @@ mod imp {
         }
     }
 
+    /// Stop the background recorder (not the settings window) and start it again
+    /// so new settings take effect. The rolling buffer starts empty afterwards.
+    pub fn restart_recorder() -> bool {
+        const KILL: &str = "Get-CimInstance Win32_Process -Filter \"Name='bufo.exe'\" | \
+            Where-Object { $_.CommandLine -notmatch '--ui' -and $_.ProcessId -ne [int]$env:BUFO_SELF } | \
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", KILL])
+            .env("BUFO_SELF", std::process::id().to_string())
+            .creation_flags(0x0800_0000)
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        std::env::current_exe().is_ok_and(|exe| {
+            let null = std::process::Stdio::null;
+            Command::new(exe).stdin(null()).stdout(null()).stderr(null()).spawn().is_ok()
+        })
+    }
+
     /// Desktop notification (Windows toast). Fire and forget; text goes through
     /// environment variables so it can never be interpreted as script.
     pub fn notify(title: &str, body: &str) {
@@ -141,6 +159,17 @@ mod imp {
     pub fn beep() {
         // Terminal bell; desktop sounds are not portable.
         let _ = std::io::stderr().write_all(b"\x07");
+    }
+
+    /// Stop the background recorder and start it again with the new settings.
+    pub fn restart_recorder() -> bool {
+        if let Some(pid) = read_pid("BufoSingleInstance").filter(|p| *p != std::process::id() && pid_alive(*p)) {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+        std::env::current_exe().is_ok_and(|exe| {
+            Command::new(exe).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
+        })
     }
 
     /// Desktop notification through `notify-send` (silently skipped if absent).

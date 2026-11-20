@@ -782,7 +782,20 @@ impl App {
             self.status = match settings::save(&self.form.to_file()) {
                 Ok(()) => {
                     self.saved_print = self.form.fingerprint();
-                    "Settings saved".into()
+                    if self.running {
+                        // The recorder reads settings at start: restart it in the background.
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            let ok = crate::platform::restart_recorder();
+                            let _ = tx.send(
+                                if ok { "Settings saved, recorder restarted" } else { "Settings saved (restart the recorder)" }
+                                    .to_string(),
+                            );
+                        });
+                        "Settings saved, restarting recorder ...".into()
+                    } else {
+                        "Settings saved".into()
+                    }
                 }
                 Err(e) => format!("Could not save: {e}"),
             };
