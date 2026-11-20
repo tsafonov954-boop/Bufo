@@ -33,7 +33,7 @@ Tested on a desktop; real-game FPS impact not yet measured. License: GPLv3 (see 
 | | Windows 10/11 | Linux |
 |---|---|---|
 | Capture | Desktop Duplication (GPU, works with fullscreen games), WGC / ffmpeg fallbacks | X11 via ffmpeg `x11grab` (tested in WSL/Xvfb); Wayland not yet |
-| Encoder | Media Foundation hardware HEVC | ffmpeg: NVENC, VAAPI, or software x264 (each is probed before use) |
+| Encoder | ffmpeg hardware HEVC, probed at start: NVIDIA NVENC, AMD AMF, Intel Quick Sync (AMD/Intel untested); Media Foundation HEVC as fallback | ffmpeg: NVENC, VAAPI, or software x264 (each is probed before use) |
 | Audio | WASAPI loopback (+ mic) | PulseAudio/PipeWire monitor via ffmpeg (untested) |
 | Hotkeys / tray | yes | X11 global hotkeys (default `Ctrl+Shift+F9/F10/F11`); no tray yet |
 | Window app (`--ui`), gallery, trim / GIF / 9:16 | yes | builds; untested |

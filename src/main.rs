@@ -325,9 +325,12 @@ fn start_recorder(c: &Config, cap: Capture, audio: bool) -> std::io::Result<Chil
         // Raw PCM from our WASAPI thread arrives on stdin.
         cmd.args(["-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0", "-map", "0:v", "-map", "1:a"]);
     }
-    cmd.args(["-c:v", "hevc_nvenc", "-preset", "p1", "-rc", "vbr"])
-        .args(["-cq", &c.cq.to_string(), "-b:v", "0", "-maxrate", "16M", "-bufsize", "32M"])
-        .args(["-g", &gop, "-forced-idr", "1"]);
+    let enc = chosen_encoder(c);
+    let vf = if cap == Capture::Dda { enc.vf_dda } else { enc.vf_gdi };
+    if !vf.is_empty() {
+        cmd.args(["-vf", vf]);
+    }
+    cmd.args(&enc.args).args(["-g", &gop]);
     if audio {
         cmd.args(["-c:a", "aac", "-b:a", "160k"]);
     } else {
@@ -373,6 +376,69 @@ fn pipe_audio(child: &mut Child, rx: Arc<std::sync::Mutex<std::sync::mpsc::Recei
             }
         }
     });
+}
+
+/// One hardware encoder that ffmpeg can drive on the Windows capture path.
+#[cfg(windows)]
+#[derive(Clone)]
+struct Enc {
+    name: &'static str,
+    /// Video filter after ddagrab (GPU frames) / gdigrab (CPU frames).
+    vf_dda: &'static str,
+    vf_gdi: &'static str,
+    args: Vec<String>,
+}
+
+/// NVIDIA, AMD and Intel hardware HEVC encoders, best first.
+#[cfg(windows)]
+fn encoder_candidates(c: &Config) -> Vec<Enc> {
+    let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let br = format!("{}", c.bitrate);
+    let mut nv = s(&["-c:v", "hevc_nvenc", "-preset", "p1", "-rc", "vbr", "-cq"]);
+    nv.extend(s(&[&c.cq.to_string(), "-b:v", "0", "-maxrate", "16M", "-bufsize", "32M", "-forced-idr", "1"]));
+    let mut amf = s(&["-c:v", "hevc_amf", "-usage", "lowlatency", "-quality", "speed", "-rc", "vbr_latency", "-b:v"]);
+    amf.extend(s(&[&br, "-maxrate", "16M"]));
+    let mut qsv = s(&["-c:v", "hevc_qsv", "-preset", "veryfast", "-look_ahead", "0", "-b:v"]);
+    qsv.extend(s(&[&br, "-maxrate", "16M"]));
+    vec![
+        Enc { name: "NVIDIA NVENC", vf_dda: "", vf_gdi: "", args: nv },
+        Enc { name: "AMD AMF", vf_dda: "", vf_gdi: "", args: amf },
+        Enc { name: "Intel Quick Sync", vf_dda: "hwmap=derive_device=qsv,format=qsv", vf_gdi: "format=nv12", args: qsv },
+    ]
+}
+
+/// Does this encoder work on this machine, through the real capture chain?
+#[cfg(windows)]
+fn encoder_works(e: &Enc) -> bool {
+    let mut cmd = Command::new(ffmpeg_bin());
+    cmd.args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30"]);
+    if !e.vf_dda.is_empty() {
+        cmd.args(["-vf", e.vf_dda]);
+    }
+    cmd.args(["-frames:v", "5"]).args(&e.args).args(["-f", "null", "-"]).stdin(Stdio::null());
+    platform::no_window(&mut cmd);
+    cmd.output().is_ok_and(|o| o.status.success())
+}
+
+/// The encoder to use (probed once). `None` = none of them works.
+#[cfg(windows)]
+fn chosen_encoder_opt(c: &Config) -> Option<Enc> {
+    static CHOSEN: std::sync::OnceLock<Option<Enc>> = std::sync::OnceLock::new();
+    CHOSEN
+        .get_or_init(|| {
+            let found = encoder_candidates(c).into_iter().find(encoder_works);
+            match &found {
+                Some(e) => settings::log(&format!("encoder: {}", e.name)),
+                None => settings::log("encoder: no hardware encoder found through ffmpeg"),
+            }
+            found
+        })
+        .clone()
+}
+
+#[cfg(windows)]
+fn chosen_encoder(c: &Config) -> Enc {
+    chosen_encoder_opt(c).unwrap_or_else(|| encoder_candidates(c).remove(0))
 }
 
 /// Start with the GPU path; if no segment shows up in time, fall back to GDI.
@@ -628,22 +694,11 @@ fn start_dda(c: &Config) -> Result<Rec, String> {
     Ok(Rec::Dda(ctl))
 }
 
-/// Can ffmpeg encode with NVENC on this machine?
-#[cfg(windows)]
-fn nvenc_works() -> bool {
-    let mut cmd = Command::new(ffmpeg_bin());
-    cmd.args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2"])
-        .args(["-frames:v", "1", "-c:v", "hevc_nvenc", "-f", "null", "-"])
-        .stdin(Stdio::null());
-    platform::no_window(&mut cmd);
-    cmd.status().is_ok_and(|s| s.success())
-}
-
 #[cfg(windows)]
 fn start_capture(c: &Config) -> Option<Rec> {
     let mut c = c.clone();
     if c.capture == "auto" {
-        c.capture = if nvenc_works() { "ffmpeg" } else { "dda" }.to_string();
+        c.capture = if chosen_encoder_opt(&c).is_some() { "ffmpeg" } else { "dda" }.to_string();
     }
     let c = &c;
     if c.capture == "dda" {
