@@ -44,6 +44,19 @@ enum Action {
     Export(usize),
     Delete(usize),
     SaveMeta(usize),
+    Fav(usize),
+    Trim(usize),
+    Gif(usize),
+    Copy(usize),
+}
+
+/// The open trim panel: which clip and the selected range in seconds.
+struct Trim {
+    path: PathBuf,
+    title: String,
+    dur: f64,
+    from: f64,
+    to: f64,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -154,6 +167,8 @@ pub struct App {
     reload: bool,
     tz: i64,
     autostart: bool,
+    trim: Option<Trim>,
+    only_fav: bool,
 }
 
 impl App {
@@ -178,6 +193,8 @@ impl App {
             reload: false,
             tz: local_offset_secs(),
             autostart: crate::platform::autostart_enabled(),
+            trim: None,
+            only_fav: false,
         };
         app.load();
         app
@@ -201,6 +218,9 @@ impl App {
 
     fn matches(&self, c: &Clip) -> bool {
         if !self.game.is_empty() && c.meta.game != self.game {
+            return false;
+        }
+        if self.only_fav && !c.meta.favorite {
             return false;
         }
         let hay = format!(
@@ -242,6 +262,32 @@ impl App {
                     };
                     let _ = tx.send(msg);
                 });
+            }
+            Action::Fav(i) => {
+                let c = &mut self.clips[i];
+                c.meta.favorite = !c.meta.favorite;
+                gallery::save_meta(&c.path, &c.meta);
+            }
+            Action::Trim(i) => {
+                let c = &self.clips[i];
+                let dur = export::duration(&c.path).unwrap_or(c.meta.duration as f64).max(1.0);
+                self.trim = Some(Trim { path: c.path.clone(), title: c.meta.title.clone(), dur, from: 0.0, to: dur });
+            }
+            Action::Gif(i) => {
+                let path = self.clips[i].path.clone();
+                let tx = self.tx.clone();
+                self.status = "Making GIF (first 15 s) ...".to_string();
+                std::thread::spawn(move || {
+                    let msg = match export::gif(&path, 0.0, 15.0) {
+                        Some(p) => format!("GIF saved: {}", p.display()),
+                        None => "GIF failed (is ffmpeg installed?)".to_string(),
+                    };
+                    let _ = tx.send(msg);
+                });
+            }
+            Action::Copy(i) => {
+                let ok = crate::platform::copy_file_to_clipboard(&self.clips[i].path);
+                self.status = if ok { "Copied to clipboard".into() } else { "Could not copy".into() };
             }
             Action::Delete(i) => {
                 if self.clips[i].confirm_delete {
@@ -306,6 +352,80 @@ impl App {
         });
     }
 
+    /// Range sliders for cutting a clip; saves a new `_trim.mp4`, the original stays.
+    fn trim_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(t) = self.trim.as_mut() else { return };
+        let (mut run, mut close, mut preview) = (false, false, false);
+        egui::Frame::new().fill(CARD).stroke(egui::Stroke::new(1.0, ACCENT)).corner_radius(12).inner_margin(14).show(
+            ui,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("\u{2702}  Trim: {}", t.title)).strong().size(15.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("\u{2715}").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                let dur = t.dur;
+                let (mut from, mut to) = (t.from, t.to);
+                egui::Grid::new("trim_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label(RichText::new("Start").color(MUTED));
+                    ui.add(egui::Slider::new(&mut from, 0.0..=dur).suffix(" s").fixed_decimals(1));
+                    ui.end_row();
+                    ui.label(RichText::new("End").color(MUTED));
+                    ui.add(egui::Slider::new(&mut to, 0.0..=dur).suffix(" s").fixed_decimals(1));
+                    ui.end_row();
+                });
+                // Keep at least half a second between the handles.
+                if from > t.from && from > to - 0.5 {
+                    from = (to - 0.5).max(0.0);
+                }
+                if to < t.to && to < from + 0.5 {
+                    to = (from + 0.5).min(dur);
+                }
+                t.from = from;
+                t.to = to;
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let b = egui::Button::new(RichText::new("Save trimmed copy").color(Color32::WHITE))
+                        .fill(ACCENT)
+                        .corner_radius(6);
+                    if ui.add(b).clicked() {
+                        run = true;
+                    }
+                    if ui.button("Open original").clicked() {
+                        preview = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.1} s selected of {:.1} s", t.to - t.from, t.dur))
+                            .color(MUTED)
+                            .size(12.0),
+                    );
+                });
+            },
+        );
+        if preview {
+            crate::platform::open(&t.path);
+        }
+        if run {
+            let (path, from, to) = (t.path.clone(), t.from, t.to);
+            let tx = self.tx.clone();
+            self.status = "Trimming ...".to_string();
+            self.trim = None;
+            std::thread::spawn(move || {
+                let msg = match export::trim(&path, from, to) {
+                    Some(p) => format!("Trimmed copy: {}", p.display()),
+                    None => "Trim failed (is ffmpeg installed?)".to_string(),
+                };
+                let _ = tx.send(msg);
+            });
+        } else if close {
+            self.trim = None;
+        }
+    }
+
     fn clips_ui(&mut self, ui: &mut egui::Ui) {
         // Toolbar.
         ui.horizontal(|ui| {
@@ -331,11 +451,17 @@ impl App {
             ui.label(RichText::new("9:16 export").color(MUTED));
             ui.selectable_value(&mut self.crop_style, false, "Blur");
             ui.selectable_value(&mut self.crop_style, true, "Crop");
+            ui.toggle_value(&mut self.only_fav, "Favorites only");
             if ui.button("\u{27f3} Refresh").clicked() {
                 self.reload = true;
             }
         });
         ui.add_space(10.0);
+
+        if self.trim.is_some() {
+            self.trim_panel(ui);
+            ui.add_space(10.0);
+        }
 
         if self.clips.is_empty() {
             ui.add_space(80.0);
@@ -443,11 +569,20 @@ impl App {
                                 if ui.add(play).clicked() {
                                     actions.push(Action::Play(i));
                                 }
-                                if ui.button("9:16").on_hover_text("Export vertical video").clicked() {
-                                    actions.push(Action::Export(i));
+                                let (star, col) = if clip.meta.favorite {
+                                    ("Fav \u{2713}", Color32::from_rgb(255, 196, 61))
+                                } else {
+                                    ("Fav", MUTED)
+                                };
+                                if ui
+                                    .button(RichText::new(star).color(col))
+                                    .on_hover_text("Favorite (kept by auto-cleanup)")
+                                    .clicked()
+                                {
+                                    actions.push(Action::Fav(i));
                                 }
-                                if ui.button("Folder").clicked() {
-                                    actions.push(Action::Show(i));
+                                if ui.button("\u{2702} Trim").on_hover_text("Cut the clip").clicked() {
+                                    actions.push(Action::Trim(i));
                                 }
                                 let (label, col) = if clip.confirm_delete {
                                     ("Really?", ACCENT)
@@ -456,6 +591,20 @@ impl App {
                                 };
                                 if ui.button(RichText::new(label).color(col)).clicked() {
                                     actions.push(Action::Delete(i));
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.button("9:16").on_hover_text("Export vertical video").clicked() {
+                                    actions.push(Action::Export(i));
+                                }
+                                if ui.button("GIF").on_hover_text("First 15 s as a GIF").clicked() {
+                                    actions.push(Action::Gif(i));
+                                }
+                                if ui.button("Copy").on_hover_text("Copy the file (paste into chats)").clicked() {
+                                    actions.push(Action::Copy(i));
+                                }
+                                if ui.button("Folder").clicked() {
+                                    actions.push(Action::Show(i));
                                 }
                             });
                             });

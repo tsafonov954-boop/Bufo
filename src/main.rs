@@ -95,6 +95,8 @@ struct Config {
     /// `--export FILE` (or `--export last`): make a 9:16 version and exit.
     export: Option<String>,
     export_style: String,
+    /// `--trim FILE|last --from S --to S` or `--gif FILE|last`: edit a clip and exit.
+    edit: Option<(&'static str, String)>,
     export_from: Option<f64>,
     export_to: Option<f64>,
     /// "dda" (desktop duplication, default; works with fullscreen games), "wgc" or "ffmpeg".
@@ -136,6 +138,7 @@ fn parse_args() -> Config {
         ui: false,
         export: None,
         export_style: "blur".to_string(),
+        edit: None,
         export_from: None,
         export_to: None,
         capture: "dda".to_string(),
@@ -197,6 +200,8 @@ fn parse_args() -> Config {
             }
             "--export" => c.export = Some(val),
             "--style" => c.export_style = val,
+            "--trim" => c.edit = Some(("trim", val)),
+            "--gif" => c.edit = Some(("gif", val)),
             "--from" => c.export_from = val.parse().ok(),
             "--to" => c.export_to = val.parse().ok(),
             "--cleanup" => {
@@ -613,6 +618,9 @@ fn cleanup_clips(cfg: &Config) -> usize {
         if i == newest {
             break;
         }
+        if gallery::is_favorite(path) {
+            continue; // starred clips are kept
+        }
         let too_old = cfg.keep_days > 0 && now.duration_since(*modified).is_ok_and(|a| a > max_age);
         let too_big = cfg.max_clips_gb > 0.0 && total > limit;
         if !(too_old || too_big) {
@@ -762,6 +770,19 @@ fn main() {
     }
     if cfg.cleanup_only {
         println!("cleanup: removed {} clip(s)", cleanup_clips(&cfg));
+        return;
+    }
+    if let Some((kind, target)) = &cfg.edit {
+        let input = if target == "last" { export::newest_clip(&cfg) } else { Some(PathBuf::from(target)) };
+        let (from, to) = (cfg.export_from.unwrap_or(0.0), cfg.export_to);
+        let out = input.and_then(|i| {
+            let to = to.or_else(|| export::duration(&i)).unwrap_or(0.0);
+            if *kind == "trim" { export::trim(&i, from, to) } else { export::gif(&i, from, to.min(from + 15.0)) }
+        });
+        match out {
+            Some(p) => println!("{kind}: {}", p.display()),
+            None => eprintln!("{kind} failed"),
+        }
         return;
     }
     if let Some(target) = &cfg.export {

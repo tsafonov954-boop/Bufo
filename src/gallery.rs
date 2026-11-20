@@ -24,10 +24,20 @@ pub struct ClipMeta {
     /// Approximate length in seconds.
     pub duration: u64,
     pub tags: Vec<String>,
+    /// Starred by the user (never auto-deleted by cleanup).
+    pub favorite: bool,
 }
 
 pub fn sidecar(clip: &Path) -> PathBuf {
     clip.with_extension("json")
+}
+
+/// Is this clip starred? Reads the sidecar; missing or broken means no.
+pub fn is_favorite(clip: &Path) -> bool {
+    fs::read_to_string(sidecar(clip))
+        .ok()
+        .and_then(|t| serde_json::from_str::<ClipMeta>(&t).ok())
+        .is_some_and(|m| m.favorite)
 }
 
 /// Persist edited title/tags next to the clip.
@@ -90,7 +100,7 @@ pub fn register(cfg: &Config, clip: &Path, game: &str, duration: u64) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let title = if game.is_empty() { "Clip".to_string() } else { game.to_string() };
-    let meta = ClipMeta { title, game: game.to_string(), created, duration, tags: Vec::new() };
+    let meta = ClipMeta { title, game: game.to_string(), created, duration, tags: Vec::new(), favorite: false };
     if let Ok(json) = serde_json::to_string_pretty(&meta) {
         let _ = fs::write(sidecar(clip), json);
     }

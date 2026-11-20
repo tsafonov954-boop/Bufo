@@ -53,6 +53,70 @@ pub fn newest_clip(cfg: &Config) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Length of a video in seconds, read from `ffmpeg -i` output.
+pub fn duration(input: &Path) -> Option<f64> {
+    let out = Command::new(ffmpeg_bin()).args(["-hide_banner", "-i"]).arg(input).stdin(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+    let rest = text.split("Duration:").nth(1)?.trim_start();
+    let t = rest.split(',').next()?.trim();
+    let mut parts = t.split(':');
+    let (h, m, s): (f64, f64, f64) =
+        (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+/// Run ffmpeg with the video encoder `enc` (GPU first, software as fallback).
+fn run_with_fallback(build: impl Fn(&[&str]) -> Command) -> bool {
+    let attempts: [&[&str]; 2] = [
+        &["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "21", "-b:v", "0"],
+        &["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"],
+    ];
+    attempts.iter().any(|enc| build(enc).stdin(Stdio::null()).status().is_ok_and(|s| s.success()))
+}
+
+/// Cut `[from, to]` seconds out of a clip, frame-accurately (re-encodes video, keeps audio).
+/// Writes `<name>_trim.mp4` next to the input and returns its path.
+pub fn trim(input: &Path, from: f64, to: f64) -> Option<PathBuf> {
+    if to <= from {
+        return None;
+    }
+    let stem = input.file_stem()?.to_string_lossy().to_string();
+    let out = input.with_file_name(format!("{stem}_trim.mp4"));
+    let ok = run_with_fallback(|enc| {
+        let mut cmd = Command::new(ffmpeg_bin());
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(input);
+        cmd.args(["-ss", &format!("{from:.3}"), "-to", &format!("{to:.3}")]);
+        cmd.args(enc).args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]);
+        cmd.arg(&out);
+        cmd
+    });
+    ok.then_some(out)
+}
+
+/// Animated GIF (max 15 s, 480 px wide, 15 fps) from `[from, to]` seconds.
+pub fn gif(input: &Path, from: f64, to: f64) -> Option<PathBuf> {
+    let to = to.min(from + 15.0);
+    if to <= from {
+        return None;
+    }
+    let stem = input.file_stem()?.to_string_lossy().to_string();
+    let out = input.with_file_name(format!("{stem}.gif"));
+    let ok = Command::new(ffmpeg_bin())
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-ss", &format!("{from:.3}"), "-to", &format!("{to:.3}"), "-i"])
+        .arg(input)
+        .args([
+            "-vf",
+            "fps=15,scale=480:-2:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse",
+            "-an",
+        ])
+        .arg(&out)
+        .stdin(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    ok.then_some(out)
+}
+
 /// Re-encode `input` to 1080x1920. `from`/`to` are seconds (None = whole clip).
 /// Returns the output path (`export_<name>_vertical.mp4`, next to the input).
 pub fn vertical(input: &Path, from: Option<f64>, to: Option<f64>, style: Style) -> Option<PathBuf> {
