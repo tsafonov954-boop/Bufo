@@ -18,10 +18,14 @@ jobs:
         with:
           name: bufo-windows
           path: target/release/bufo.exe
+      # The release's main file is the single-file build with ffmpeg inside (scripts/make-single.ps1,
+      # attached by hand as bufo.exe). CI only adds the small build that needs ffmpeg separately.
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: Copy-Item target/release/bufo.exe bufo-needs-ffmpeg.exe
       - if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/bufo.exe
+          files: bufo-needs-ffmpeg.exe
 
   linux:
     runs-on: ubuntu-latest

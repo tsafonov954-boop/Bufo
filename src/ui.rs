@@ -13,13 +13,45 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::{export, gallery, settings, Config};
 
-const ACCENT: Color32 = Color32::from_rgb(230, 58, 58);
-const BG: Color32 = Color32::from_rgb(15, 17, 21);
-const PANEL: Color32 = Color32::from_rgb(21, 24, 30);
-const CARD: Color32 = Color32::from_rgb(28, 32, 40);
-const LINE: Color32 = Color32::from_rgb(42, 47, 58);
-const MUTED: Color32 = Color32::from_rgb(139, 147, 163);
-const OK: Color32 = Color32::from_rgb(76, 201, 120);
+// Gaming-neon palette: near-black violet surfaces, magenta + cyan glow.
+const ACCENT: Color32 = Color32::from_rgb(255, 46, 151); // neon magenta (primary)
+const NEON2: Color32 = Color32::from_rgb(0, 229, 255); // neon cyan (secondary)
+const BG: Color32 = Color32::from_rgb(9, 7, 20);
+const PANEL: Color32 = Color32::from_rgb(15, 12, 32);
+const CARD: Color32 = Color32::from_rgb(23, 19, 46);
+const LINE: Color32 = Color32::from_rgb(52, 44, 98);
+const MUTED: Color32 = Color32::from_rgb(150, 144, 196);
+const OK: Color32 = Color32::from_rgb(57, 255, 136);
+
+fn with_alpha(c: Color32, a: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+/// Soft neon halo around `rect`: a few expanding translucent outlines.
+fn glow(p: &egui::Painter, rect: egui::Rect, color: Color32, radius: f32, strength: f32) {
+    for i in 1..=6 {
+        let t = i as f32 / 6.0;
+        let a = ((1.0 - t) * 70.0 * strength) as u8;
+        p.rect_stroke(
+            rect.expand(t * 9.0),
+            radius + t * 9.0,
+            egui::Stroke::new(2.0, with_alpha(color, a)),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
+/// Primary action button: neon fill with a halo that brightens on hover.
+fn neon_button(ui: &mut egui::Ui, text: &str, color: Color32, min: egui::Vec2) -> egui::Response {
+    let b = egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
+        .fill(color)
+        .stroke(egui::Stroke::new(1.0, with_alpha(Color32::WHITE, 90)))
+        .corner_radius(9)
+        .min_size(min);
+    let r = ui.add(b);
+    glow(ui.painter(), r.rect, color, 9.0, if r.hovered() { 1.0 } else { 0.45 });
+    r
+}
 
 /// Is the background recorder running?
 fn recorder_running() -> bool {
@@ -345,22 +377,29 @@ impl App {
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.add_space(6.0);
-            ui.label(RichText::new("\u{25cf}").color(ACCENT).size(18.0));
-            ui.label(RichText::new("Bufo").strong().size(18.0));
+            let dot = ui.label(RichText::new("\u{25cf}").color(ACCENT).size(20.0));
+            glow(ui.painter(), dot.rect.shrink(3.0), ACCENT, 8.0, 0.8);
+            ui.label(RichText::new("BUFO").strong().size(22.0).color(NEON2));
         });
-        ui.add_space(18.0);
-        for (tab, icon, name) in [(Tab::Clips, "\u{25b6}", "Clips"), (Tab::Settings, "\u{2699}", "Settings")] {
+        ui.add_space(22.0);
+        for (tab, icon, name) in [(Tab::Clips, "\u{25b6}", "CLIPS"), (Tab::Settings, "\u{2699}", "SETTINGS")] {
             let on = self.tab == tab;
-            let text = RichText::new(format!("  {icon}   {name}")).size(15.0).color(if on { Color32::WHITE } else { MUTED });
+            let text = RichText::new(format!("  {icon}   {name}")).size(14.0).strong().color(if on { Color32::WHITE } else { MUTED });
             let btn = egui::Button::new(text)
-                .fill(if on { ACCENT } else { Color32::TRANSPARENT })
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(8)
-                .min_size(egui::vec2(ui.available_width(), 38.0));
-            if ui.add(btn).clicked() {
+                .fill(if on { with_alpha(ACCENT, 60) } else { Color32::TRANSPARENT })
+                .stroke(if on { egui::Stroke::new(1.5, ACCENT) } else { egui::Stroke::NONE })
+                .corner_radius(10)
+                .min_size(egui::vec2(ui.available_width(), 40.0));
+            let r = ui.add(btn);
+            if on {
+                glow(ui.painter(), r.rect, ACCENT, 10.0, 0.7);
+            } else if r.hovered() {
+                glow(ui.painter(), r.rect, NEON2, 10.0, 0.4);
+            }
+            if r.clicked() {
                 self.tab = tab;
             }
-            ui.add_space(4.0);
+            ui.add_space(6.0);
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
             ui.add_space(10.0);
@@ -372,11 +411,7 @@ impl App {
             );
             ui.add_space(6.0);
             if !self.running {
-                let b = egui::Button::new(RichText::new("Start recorder").color(Color32::WHITE))
-                    .fill(ACCENT)
-                    .corner_radius(8)
-                    .min_size(egui::vec2(ui.available_width(), 32.0));
-                if ui.add(b).clicked() {
+                if neon_button(ui, "Start recorder", ACCENT, egui::vec2(ui.available_width(), 34.0)).clicked() {
                     if let Ok(exe) = std::env::current_exe() {
                         let _ = Command::new(exe).spawn();
                     }
@@ -396,7 +431,7 @@ impl App {
     fn trim_panel(&mut self, ui: &mut egui::Ui) {
         let Some(t) = self.trim.as_mut() else { return };
         let (mut run, mut close, mut preview) = (false, false, false);
-        egui::Frame::new().fill(CARD).stroke(egui::Stroke::new(1.0, ACCENT)).corner_radius(12).inner_margin(14).show(
+        egui::Frame::new().fill(CARD).stroke(egui::Stroke::new(1.5, NEON2)).corner_radius(14).inner_margin(14).show(
             ui,
             |ui| {
                 ui.horizontal(|ui| {
@@ -460,10 +495,7 @@ impl App {
                 t.to = to;
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let b = egui::Button::new(RichText::new("Save trimmed copy").color(Color32::WHITE))
-                        .fill(ACCENT)
-                        .corner_radius(6);
-                    if ui.add(b).clicked() {
+                    if neon_button(ui, "Save trimmed copy", ACCENT, egui::vec2(0.0, 30.0)).clicked() {
                         run = true;
                     }
                     if ui.button("Open original").clicked() {
@@ -570,10 +602,10 @@ impl App {
                 for &i in row_items {
                     let thumb = gallery::thumb_path(&self.cfg, &self.clips[i].path);
                     let clip = &mut self.clips[i];
-                    egui::Frame::new()
+                    let fr = egui::Frame::new()
                         .fill(CARD)
                         .stroke(egui::Stroke::new(1.0, LINE))
-                        .corner_radius(12)
+                        .corner_radius(14)
                         .inner_margin(10)
                         .show(ui, |ui| {
                             ui.set_width(inner_w);
@@ -634,10 +666,7 @@ impl App {
                                 actions.push(Action::SaveMeta(i));
                             }
                             ui.horizontal(|ui| {
-                                let play = egui::Button::new(RichText::new("\u{25b6} Play").color(Color32::WHITE))
-                                    .fill(ACCENT)
-                                    .corner_radius(6);
-                                if ui.add(play).clicked() {
+                                if neon_button(ui, "\u{25b6} Play", ACCENT, egui::vec2(0.0, 26.0)).clicked() {
                                     actions.push(Action::Play(i));
                                 }
                                 let (star, col) = if clip.meta.favorite {
@@ -680,6 +709,16 @@ impl App {
                             });
                             });
                         });
+                    // Neon outline on the card under the pointer.
+                    if ui.rect_contains_pointer(fr.response.rect) {
+                        glow(ui.painter(), fr.response.rect, NEON2, 14.0, 0.7);
+                        ui.painter().rect_stroke(
+                            fr.response.rect,
+                            14.0,
+                            egui::Stroke::new(1.5, NEON2),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
               });
             }
@@ -822,7 +861,7 @@ impl App {
             });
 
             card(ui, "About", |ui| {
-                ui.label("Bufo \u{b7} GPLv3 \u{b7} open source");
+                ui.label("Bufo \u{b7} GPLv3 \u{b7} open source \u{b7} no ads, no tracking");
                 ui.label(
                     RichText::new("Desktop Duplication + hardware HEVC encoder, rolling disk buffer.")
                         .color(MUTED)
@@ -832,12 +871,16 @@ impl App {
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let btn = egui::Button::new(RichText::new("Save settings").color(Color32::WHITE))
-                    .fill(if dirty && valid { ACCENT } else { LINE })
-                    .corner_radius(8)
-                    .min_size(egui::vec2(140.0, 34.0));
-                if ui.add_enabled(dirty && valid, btn).clicked() {
-                    save = true;
+                if dirty && valid {
+                    if neon_button(ui, "Save settings", ACCENT, egui::vec2(150.0, 36.0)).clicked() {
+                        save = true;
+                    }
+                } else {
+                    let btn = egui::Button::new(RichText::new("Save settings").color(MUTED))
+                        .fill(LINE)
+                        .corner_radius(9)
+                        .min_size(egui::vec2(150.0, 36.0));
+                    ui.add_enabled(false, btn);
                 }
                 if ui.add(egui::Button::new("Reset to defaults").min_size(egui::vec2(0.0, 34.0))).clicked() {
                     reset = true;
@@ -888,12 +931,18 @@ fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(CARD)
         .stroke(egui::Stroke::new(1.0, LINE))
-        .corner_radius(12)
+        .corner_radius(14)
         .inner_margin(16)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).strong().size(15.0));
-            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                // Neon tick before the card title.
+                let (tick, _) = ui.allocate_exact_size(egui::vec2(4.0, 16.0), egui::Sense::hover());
+                ui.painter().rect_filled(tick, 2, NEON2);
+                glow(ui.painter(), tick, NEON2, 2.0, 0.6);
+                ui.label(RichText::new(title.to_uppercase()).strong().size(13.0).color(Color32::WHITE));
+            });
+            ui.add_space(10.0);
             body(ui);
         });
     ui.add_space(12.0);
@@ -980,17 +1029,22 @@ fn theme(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG;
     v.window_fill = CARD;
-    v.extreme_bg_color = Color32::from_rgb(12, 14, 18);
-    v.selection.bg_fill = ACCENT;
-    v.hyperlink_color = ACCENT;
+    v.extreme_bg_color = Color32::from_rgb(7, 5, 16);
+    v.selection.bg_fill = with_alpha(ACCENT, 170);
+    v.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
+    v.hyperlink_color = NEON2;
     v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, LINE);
     for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-        w.corner_radius = egui::CornerRadius::same(6);
+        w.corner_radius = egui::CornerRadius::same(8);
     }
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(40, 45, 56);
-    v.widgets.inactive.bg_fill = Color32::from_rgb(40, 45, 56);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(54, 60, 74);
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(34, 29, 66);
+    v.widgets.inactive.bg_fill = Color32::from_rgb(34, 29, 66);
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, LINE);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(48, 40, 92);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(48, 40, 92);
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, NEON2);
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.5, ACCENT);
+    v.widgets.active.weak_bg_fill = with_alpha(ACCENT, 90);
     ctx.set_visuals(v);
 }
 

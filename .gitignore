@@ -4,3 +4,4 @@
 test-out/
 test-*/
 bench/*.csv
+/dist

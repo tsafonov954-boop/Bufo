@@ -260,9 +260,112 @@ fn parse_args() -> Config {
     c
 }
 
+/// `%APPDATA%\Bufo\ffmpeg.exe`: where the first-run download puts ffmpeg.
+fn local_ffmpeg_path() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    settings::config_path()?.parent().map(|d| d.join(name))
+}
+
+#[cfg(windows)]
+fn ffmpeg_works() -> bool {
+    let mut cmd = Command::new(ffmpeg_bin());
+    cmd.arg("-version").stdout(Stdio::null()).stderr(Stdio::null());
+    platform::no_window(&mut cmd);
+    cmd.status().is_ok_and(|s| s.success())
+}
+
+/// The xz-compressed ffmpeg.exe embedded at build time (`--features bundle-ffmpeg`).
+#[cfg(all(windows, feature = "bundle-ffmpeg"))]
+static BUNDLED_FFMPEG_XZ: &[u8] = include_bytes!(env!("BUFO_FFMPEG_XZ"));
+
+/// Unpack the embedded ffmpeg to `dest` (via a temp file, so a half-written copy is never used).
+#[cfg(all(windows, feature = "bundle-ffmpeg"))]
+fn unpack_bundled_ffmpeg(dest: &std::path::Path) -> bool {
+    platform::notify("Bufo: first start", "Unpacking the video encoder (one time, a few seconds).");
+    if let Some(d) = dest.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    let tmp = dest.with_extension("part");
+    let ok = fs::File::create(&tmp).is_ok_and(|f| {
+        let mut out = std::io::BufWriter::new(f);
+        lzma_rs::xz_decompress(&mut &BUNDLED_FFMPEG_XZ[..], &mut out).is_ok() && std::io::Write::flush(&mut out).is_ok()
+    });
+    let ok = ok && fs::rename(&tmp, dest).is_ok();
+    if !ok {
+        let _ = fs::remove_file(&tmp);
+    }
+    settings::log(if ok { "bundled ffmpeg unpacked" } else { "bundled ffmpeg unpack failed" });
+    ok
+}
+
+/// First-run setup: if no ffmpeg can be found, download the official "essentials"
+/// build once (Windows 10/11 ship `curl` and `tar`) into `%APPDATA%\Bufo`.
+/// Returns whether ffmpeg is usable afterwards.
+#[cfg(windows)]
+fn ensure_ffmpeg() -> bool {
+    if ffmpeg_works() {
+        return true;
+    }
+    let Some(dest) = local_ffmpeg_path() else { return false };
+    // Single-file build: ffmpeg travels inside bufo.exe, no download needed.
+    #[cfg(feature = "bundle-ffmpeg")]
+    if unpack_bundled_ffmpeg(&dest) {
+        return ffmpeg_works();
+    }
+    const URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+    platform::notify("Bufo: first start", "Downloading ffmpeg (one time, about 120 MB). Recording starts when it is done.");
+    settings::log("ffmpeg not found, downloading");
+    let tmp = env::temp_dir().join("bufo-ffmpeg-setup");
+    let _ = fs::remove_dir_all(&tmp);
+    if fs::create_dir_all(&tmp).is_err() {
+        return false;
+    }
+    let zip = tmp.join("ffmpeg.zip");
+    let mut dl = Command::new("curl.exe");
+    dl.args(["-L", "--fail", "--silent", "--retry", "3", "-o"]).arg(&zip).arg(URL);
+    platform::no_window(&mut dl);
+    let mut ok = dl.status().is_ok_and(|s| s.success());
+    if ok {
+        let mut x = Command::new("tar.exe");
+        x.arg("-xf").arg(&zip).arg("-C").arg(&tmp);
+        platform::no_window(&mut x);
+        ok = x.status().is_ok_and(|s| s.success());
+    }
+    if ok {
+        ok = false;
+        for e in fs::read_dir(&tmp).into_iter().flatten().flatten() {
+            let exe = e.path().join("bin").join("ffmpeg.exe");
+            if exe.exists() {
+                if let Some(d) = dest.parent() {
+                    let _ = fs::create_dir_all(d);
+                }
+                ok = fs::copy(&exe, &dest).is_ok();
+                break;
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&tmp);
+    settings::log(if ok { "ffmpeg downloaded" } else { "ffmpeg download failed" });
+    if !ok {
+        platform::notify("Bufo: ffmpeg download failed", "Check your internet, or put ffmpeg.exe next to bufo.exe.");
+    }
+    ok && ffmpeg_works()
+}
+
+#[cfg(not(windows))]
+fn ensure_ffmpeg() -> bool {
+    true
+}
+
 /// ffmpeg executable: `FFMPEG` env var, else `ffmpeg` from PATH.
 /// Where ffmpeg is: `FFMPEG` env var, next to bufo.exe, a WinGet install, else PATH.
 fn ffmpeg_bin() -> String {
+    // The copy Bufo downloaded itself on first run wins over everything but FFMPEG.
+    if env::var("FFMPEG").is_err() {
+        if let Some(p) = local_ffmpeg_path().filter(|p| p.exists()) {
+            return p.to_string_lossy().into_owned();
+        }
+    }
     static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {
         if let Ok(p) = env::var("FFMPEG") {
@@ -981,6 +1084,8 @@ fn run_interactive(cfg: &Arc<Config>) {
 }
 
 fn main() {
+    // No settings file yet = the very first start: also open the window for the user.
+    let first_run = settings::config_path().is_some_and(|p| !p.exists());
     let cfg = Arc::new(parse_args());
     if cfg.ui {
         if !platform::claim_instance("BufoUiInstance") {
@@ -1035,6 +1140,15 @@ fn main() {
     if cfg.save_after.is_none() && already_running() {
         eprintln!("Bufo is already running");
         return;
+    }
+    if !ensure_ffmpeg() {
+        eprintln!("ffmpeg is not available");
+        return;
+    }
+    if first_run {
+        if let Ok(exe) = env::current_exe() {
+            let _ = Command::new(exe).arg("--ui").spawn();
+        }
     }
     let child = match start_capture(&cfg) {
         Some(r) => Arc::new(Mutex::new(Some(r))),
