@@ -268,7 +268,7 @@ fn local_ffmpeg_path() -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn ffmpeg_works() -> bool {
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.arg("-version").stdout(Stdio::null()).stderr(Stdio::null());
     platform::no_window(&mut cmd);
     cmd.status().is_ok_and(|s| s.success())
@@ -411,7 +411,7 @@ fn start_recorder(c: &Config, cap: Capture, audio: bool) -> std::io::Result<Chil
     let pattern = c.buffer_dir.join("seg_%06d.ts");
     let gop = (c.fps as u64 * seg_secs()).to_string();
     let log = fs::File::create(c.buffer_dir.join("ffmpeg.log"))?;
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "warning", "-y"]);
     match cap {
         Capture::Dda => {
@@ -513,7 +513,7 @@ fn encoder_candidates(c: &Config) -> Vec<Enc> {
 /// Does this encoder work on this machine, through the real capture chain?
 #[cfg(windows)]
 fn encoder_works(e: &Enc) -> bool {
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30"]);
     if !e.vf_dda.is_empty() {
         cmd.args(["-vf", e.vf_dda]);
@@ -585,7 +585,7 @@ fn start_with_fallback(c: &Config, audio: Option<Receiver<Vec<u8>>>) -> std::io:
 /// Hardware encoder arguments for Linux: NVENC, then VAAPI, then software x264.
 #[cfg(not(windows))]
 fn linux_encoder(c: &Config) -> (Vec<String>, Vec<String>, &'static str) {
-    let list = Command::new(ffmpeg_bin())
+    let list = crate::platform::command(ffmpeg_bin())
         .args(["-hide_banner", "-encoders"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -594,7 +594,7 @@ fn linux_encoder(c: &Config) -> (Vec<String>, Vec<String>, &'static str) {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     // Being listed only means ffmpeg was built with it; try a real 1-frame encode.
     let works = |pre: &[String], enc: &[String]| {
-        Command::new(ffmpeg_bin())
+        crate::platform::command(ffmpeg_bin())
             .args(["-hide_banner", "-loglevel", "quiet"])
             .args(pre)
             .args(["-f", "lavfi", "-i", "color=size=320x180:rate=1", "-frames:v", "1"])
@@ -634,7 +634,7 @@ fn start_linux(c: &Config) -> Result<Child, String> {
     let (pre, enc, name) = linux_encoder(c);
     println!("encoder: {name}");
     let display = env::var("DISPLAY").unwrap_or_else(|_| ":0.0".into());
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "warning", "-y"]).args(&pre);
     cmd.args(["-f", "x11grab", "-framerate"]).arg(c.fps.to_string()).args(["-i", &display]);
     if c.audio {
@@ -713,7 +713,7 @@ fn save_clip(c: &Config, secs: u64) -> Option<(PathBuf, u64)> {
 
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let out = c.clips_dir.join(format!("clip_{stamp}.mp4"));
-    let status = Command::new(ffmpeg_bin())
+    let status = crate::platform::command(ffmpeg_bin())
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .args(["-f", "concat", "-safe", "0", "-i"])
         .arg(&list)
@@ -926,7 +926,7 @@ fn take_screenshot(cfg: &Config) {
     let _ = fs::create_dir_all(&cfg.clips_dir);
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let path = cfg.clips_dir.join(format!("shot_{secs}.png"));
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
     #[cfg(windows)]
     cmd.args(["-f", "gdigrab", "-framerate", "1", "-i", "desktop"]);

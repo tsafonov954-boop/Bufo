@@ -5,7 +5,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::UNIX_EPOCH,
 };
 
@@ -116,7 +116,7 @@ pub fn make_thumb(cfg: &Config, clip: &Path) {
     if let Some(dir) = thumb.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let _ = Command::new(ffmpeg_bin())
+    let _ = crate::platform::command(ffmpeg_bin())
         .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i"])
         .arg(clip)
         .args(["-frames:v", "1", "-vf", "scale=360:-2,format=yuvj420p", "-q:v", "5"])

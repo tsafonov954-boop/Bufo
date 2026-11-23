@@ -55,7 +55,7 @@ pub fn newest_clip(cfg: &Config) -> Option<PathBuf> {
 
 /// Length of a video in seconds, read from `ffmpeg -i` output.
 pub fn duration(input: &Path) -> Option<f64> {
-    let out = Command::new(ffmpeg_bin()).args(["-hide_banner", "-i"]).arg(input).stdin(Stdio::null()).output().ok()?;
+    let out = crate::platform::command(ffmpeg_bin()).args(["-hide_banner", "-i"]).arg(input).stdin(Stdio::null()).output().ok()?;
     let text = String::from_utf8_lossy(&out.stderr).to_string();
     let rest = text.split("Duration:").nth(1)?.trim_start();
     let t = rest.split(',').next()?.trim();
@@ -76,7 +76,7 @@ pub fn filmstrip(input: &Path, dur: f64, n: usize, dir: &Path, prefix: &str) {
         }
         // Stay a little inside the clip: the last video frame is often earlier than the container length.
         let t = (dur * (k as f64 + 0.5) / n as f64).min((dur - 0.5).max(0.0));
-        let mut cmd = Command::new(ffmpeg_bin());
+        let mut cmd = crate::platform::command(ffmpeg_bin());
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{t:.2}"), "-i"]).arg(input);
         cmd.args(["-frames:v", "1", "-vf", "scale=200:-2,format=yuvj420p", "-q:v", "6"]).arg(&out);
         cmd.stdin(Stdio::null());
@@ -103,7 +103,7 @@ pub fn trim(input: &Path, from: f64, to: f64) -> Option<PathBuf> {
     let stem = input.file_stem()?.to_string_lossy().to_string();
     let out = input.with_file_name(format!("{stem}_trim.mp4"));
     let ok = run_with_fallback(|enc| {
-        let mut cmd = Command::new(ffmpeg_bin());
+        let mut cmd = crate::platform::command(ffmpeg_bin());
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(input);
         cmd.args(["-ss", &format!("{from:.3}"), "-to", &format!("{to:.3}"), "-map", "0:v", "-map", "0:a?"]);
         cmd.args(enc).args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]);
@@ -121,7 +121,7 @@ pub fn gif(input: &Path, from: f64, to: f64) -> Option<PathBuf> {
     }
     let stem = input.file_stem()?.to_string_lossy().to_string();
     let out = input.with_file_name(format!("{stem}.gif"));
-    let ok = Command::new(ffmpeg_bin())
+    let ok = crate::platform::command(ffmpeg_bin())
         .args(["-hide_banner", "-loglevel", "error", "-y"])
         .args(["-ss", &format!("{from:.3}"), "-to", &format!("{to:.3}"), "-i"])
         .arg(input)
@@ -142,7 +142,7 @@ pub fn gif(input: &Path, from: f64, to: f64) -> Option<PathBuf> {
 pub fn vertical(input: &Path, from: Option<f64>, to: Option<f64>, style: Style) -> Option<PathBuf> {
     let stem = input.file_stem()?.to_string_lossy().to_string();
     let out = input.with_file_name(format!("export_{stem}_vertical.mp4"));
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
     if let Some(s) = from {
         cmd.args(["-ss", &s.to_string()]);
@@ -160,7 +160,7 @@ pub fn vertical(input: &Path, from: Option<f64>, to: Option<f64>, style: Style) 
         return Some(out);
     }
     // No NVENC (e.g. a non-NVIDIA machine): fall back to software x264.
-    let mut cmd = Command::new(ffmpeg_bin());
+    let mut cmd = crate::platform::command(ffmpeg_bin());
     cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
     if let Some(s) = from {
         cmd.args(["-ss", &s.to_string()]);

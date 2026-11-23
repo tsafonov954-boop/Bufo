@@ -8,7 +8,7 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -145,7 +145,7 @@ pub fn add_track(ffmpeg: &str, buffer_dir: &Path, clip: &Path, end_ms: u64, clip
     let tmp = clip.with_extension("mux.mp4");
     let mut ok = make_wav(buffer_dir, t0, end_ms, &wav);
     if ok {
-        let mut cmd = Command::new(ffmpeg);
+        let mut cmd = crate::platform::command(ffmpeg);
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(clip).arg("-i").arg(&wav);
         cmd.args(["-map", "0:v", "-map", "0:a?", "-map", "1:a", "-c", "copy", "-c:a:1", "aac", "-b:a:1", "160k"]);
         cmd.args(["-metadata:s:a:0", "title=Game", "-metadata:s:a:1", "title=Microphone", "-movflags", "+faststart"]);

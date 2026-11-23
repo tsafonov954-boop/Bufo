@@ -30,7 +30,7 @@ mod imp {
         const KILL: &str = "Get-CimInstance Win32_Process -Filter \"Name='bufo.exe'\" | \
             Where-Object { $_.CommandLine -notmatch '--ui' -and $_.ProcessId -ne [int]$env:BUFO_SELF } | \
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
-        let _ = Command::new("powershell")
+        let _ = command("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", KILL])
             .env("BUFO_SELF", std::process::id().to_string())
             .creation_flags(0x0800_0000)
@@ -53,7 +53,7 @@ $n.Item(0).AppendChild($x.CreateTextNode($env:BUFO_T))|Out-Null;\
 $n.Item(1).AppendChild($x.CreateTextNode($env:BUFO_B))|Out-Null;\
 $t=[Windows.UI.Notifications.ToastNotification]::new($x);\
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($t)";
-        let _ = Command::new("powershell")
+        let _ = command("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
             .env("BUFO_T", title)
             .env("BUFO_B", body)
@@ -109,7 +109,7 @@ $t=[Windows.UI.Notifications.ToastNotification]::new($x);\
     const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
     fn reg(args: &[&str]) -> std::process::Output {
-        Command::new("reg")
+        command("reg")
             .args(args)
             .creation_flags(0x0800_0000)
             .output()
@@ -141,7 +141,7 @@ $t=[Windows.UI.Notifications.ToastNotification]::new($x);\
         let p = std::fs::canonicalize(path)
             .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
             .unwrap_or_else(|_| path.to_string_lossy().into_owned());
-        Command::new("powershell")
+        command("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -LiteralPath $env:BUFO_CLIP"])
             .env("BUFO_CLIP", p)
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
@@ -308,4 +308,12 @@ pub fn no_window(cmd: &mut Command) {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
+}
+
+/// `Command::new` that never opens a console window on Windows. Use it for every helper
+/// (ffmpeg, PowerShell, reg): this is a GUI app, so a plain console child would flash a terminal.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut c = Command::new(program);
+    no_window(&mut c);
+    c
 }
